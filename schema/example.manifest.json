@@ -1,0 +1,169 @@
+{
+  "schema_version": "1.1",
+  "sequence": 42,
+  "generated": "2026-11-11T12:00:00Z",
+  "expires": "2026-11-25T12:00:00Z",
+  "publisher": {
+    "name": "SafeDriver project (example data, not real packages)",
+    "url": "https://example.invalid/safedriver"
+  },
+  "signing": {
+    "algorithm": "ed25519",
+    "key_id": "0123456789abcdef"
+  },
+  "packages": [
+    {
+      "id": "examplecorp.wifi.x200.windows",
+      "name": "ExampleCorp X200 Wi-Fi driver",
+      "vendor": "ExampleCorp",
+      "category": "driver",
+      "version": "23.60.1.2",
+      "release_date": "2026-10-20",
+      "severity": "recommended",
+      "release_notes_url": "https://example.invalid/wifi/x200/23.60.1.2/notes",
+      "platform": {
+        "os": "windows",
+        "arch": [
+          "x86_64"
+        ],
+        "min_os_build": 19045
+      },
+      "hardware_ids": [
+        "pci:8086:2725",
+        "pci:8086:2725:8086:0024"
+      ],
+      "artifact": {
+        "url": "https://example.invalid/wifi/x200/x200-23.60.1.2.zip",
+        "filename": "x200-23.60.1.2.zip",
+        "size": 48211968,
+        "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        "format": "zip",
+        "signature": {
+          "type": "authenticode",
+          "subject": "O=ExampleCorp",
+          "certificate_thumbprint": "0123456789ABCDEF0123456789ABCDEF01234567",
+          "target": "catalog"
+        }
+      },
+      "install": {
+        "method": "pnputil",
+        "inf_path": "x200.inf",
+        "reboot_required": false,
+        "snapshot_required": false
+      },
+      "upstream": {
+        "source": "vendor",
+        "reference_url": "https://example.invalid/wifi/x200/downloads"
+      },
+      "class_guid": "{4d36e972-e325-11ce-bfc1-08002be10318}"
+    },
+    {
+      "id": "examplecorp.nvme.p5.firmware",
+      "name": "ExampleCorp P5 NVMe firmware",
+      "vendor": "ExampleCorp",
+      "category": "firmware",
+      "version": "4.2.0",
+      "release_date": "2026-09-02",
+      "severity": "security",
+      "platform": {
+        "os": "linux",
+        "arch": [
+          "x86_64",
+          "aarch64"
+        ]
+      },
+      "hardware_ids": [
+        "fwupd:3743975a-d9b1-5d6a-a0e2-3f1a4d2b6c7e"
+      ],
+      "artifact": {
+        "url": "https://example.invalid/lvfs/p5-4.2.0.cab",
+        "filename": "p5-4.2.0.cab",
+        "size": 1310720,
+        "sha256": "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752",
+        "format": "fwupd-cab",
+        "signature": {
+          "type": "delegated",
+          "verifier": "fwupd"
+        }
+      },
+      "install": {
+        "method": "fwupd",
+        "reboot_required": true,
+        "snapshot_required": false
+      },
+      "upstream": {
+        "source": "lvfs",
+        "reference_url": "https://example.invalid/lvfs/devices/p5"
+      }
+    },
+    {
+      "id": "examplecorp.gpu.linux.tools",
+      "name": "ExampleCorp GPU userspace tools",
+      "vendor": "ExampleCorp",
+      "category": "driver",
+      "version": "2.8.1",
+      "platform": {
+        "os": "linux",
+        "arch": [
+          "x86_64"
+        ],
+        "distros": [
+          "debian",
+          "ubuntu"
+        ]
+      },
+      "hardware_ids": [
+        "pci:10de:2684"
+      ],
+      "artifact": {
+        "url": "https://example.invalid/gpu/tools_2.8.1_amd64.deb",
+        "filename": "tools_2.8.1_amd64.deb",
+        "size": 7340032,
+        "sha256": "fd61a03af4f77d870fc21e05e7e80678095c92d808cfb3b5c279ee04c74aca13",
+        "format": "deb",
+        "signature": {
+          "type": "gpg",
+          "signature_url": "https://example.invalid/gpu/tools_2.8.1_amd64.deb.sig",
+          "fingerprint": "0123456789ABCDEF0123456789ABCDEF01234567"
+        }
+      },
+      "install": {
+        "method": "package-manager",
+        "package_name": "examplecorp-gpu-tools",
+        "reboot_required": false
+      },
+      "upstream": {
+        "source": "vendor",
+        "reference_url": "https://example.invalid/gpu/linux"
+      }
+    },
+    {
+      "id": "distro.nvidia.driver",
+      "name": "NVIDIA proprietary driver (distro package, DKMS)",
+      "vendor": "NVIDIA",
+      "category": "driver",
+      "version": "550.120",
+      "platform": {
+        "os": "linux",
+        "arch": [
+          "x86_64"
+        ],
+        "distros": [
+          "ubuntu"
+        ]
+      },
+      "hardware_ids": [
+        "pci:10de:2684"
+      ],
+      "install": {
+        "method": "package-manager",
+        "package_name": "nvidia-driver-550",
+        "reboot_required": true
+      },
+      "upstream": {
+        "source": "distro",
+        "reference_url": "https://example.invalid/ubuntu/nvidia-driver-550"
+      }
+    }
+  ]
+}

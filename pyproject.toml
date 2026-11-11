@@ -1,0 +1,15 @@
+[project]
+name = "driver-installer"
+version = "0.2.0"
+description = "SafeDriver: open-source driver and firmware updater without ads, telemetry or background services"
+requires-python = ">=3.10"
+dependencies = ["cryptography>=42"]
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.6"]
+windows = ["wmi>=1.5; sys_platform == 'win32'"]
+dev = ["pytest>=8", "jsonschema>=4"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

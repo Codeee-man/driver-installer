@@ -1,0 +1,16 @@
+# Weekly trigger for driver-installer.service (systemd USER timer).
+#
+# Enable:   systemctl --user enable --now driver-installer.timer
+# Disable:  systemctl --user disable --now driver-installer.timer
+# Status:   systemctl --user list-timers driver-installer.timer
+[Unit]
+Description=SafeDriver: weekly driver and firmware update check
+
+[Timer]
+OnCalendar=weekly
+# Run at the next login if the machine was off at the scheduled time.
+Persistent=true
+RandomizedDelaySec=2h
+
+[Install]
+WantedBy=timers.target

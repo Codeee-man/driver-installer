@@ -1,0 +1,6 @@
+[
+ {"Name": "Netwtw14", "DisplayName": "Intel(R) Wireless Adapter Driver", "PathName": "C:\\WINDOWS\\System32\\drivers\\Netwtw14.sys", "State": "Running", "StartMode": "Manual", "ServiceType": "Kernel Driver"},
+ {"Name": "nvlddmkm", "DisplayName": "nvlddmkm", "PathName": "C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\nv_dispi.inf_amd64_0a1b2c3d\\nvlddmkm.sys", "State": "Running", "StartMode": "Manual", "ServiceType": "Kernel Driver"},
+ {"Name": "rtux64w10", "DisplayName": "Realtek USB FE/1GbE/2.5GbE NIC", "PathName": "C:\\WINDOWS\\System32\\drivers\\rtux64w10.sys", "State": "Stopped", "StartMode": "Manual", "ServiceType": "Kernel Driver"},
+ {"Name": "legacycap", "DisplayName": "Legacy Capture", "PathName": "C:\\WINDOWS\\System32\\drivers\\legacycap.sys", "State": "Running", "StartMode": "Manual", "ServiceType": "Kernel Driver"}
+]

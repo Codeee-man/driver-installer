@@ -1,0 +1,17 @@
+[
+ {"DeviceID": "PCI\\VEN_8086&DEV_2725&SUBSYS_00248086&REV_1A\\4&2f1b7a3d&0&00E0", "DeviceName": "Intel(R) Wi-Fi 6E AX210 160MHz",
+  "DriverVersion": "22.250.1.2", "DriverDate": "/Date(1694476800000)/", "InfName": "oem42.inf", "DriverProviderName": "Intel",
+  "Manufacturer": "Intel Corporation", "IsSigned": true, "Signer": "Microsoft Windows Hardware Compatibility Publisher",
+  "ClassGuid": "{4d36e972-e325-11ce-bfc1-08002be10318}", "HardWareID": "PCI\\VEN_8086&DEV_2725&SUBSYS_00248086"},
+ {"DeviceID": "PCI\\VEN_10DE&DEV_2786&SUBSYS_40E91458&REV_A1\\4&1C3D25A0&0&0008", "DeviceName": "NVIDIA GeForce RTX 4070",
+  "DriverVersion": "31.0.15.3623", "DriverDate": "20230808000000.000000-000", "InfName": "oem17.inf", "DriverProviderName": "NVIDIA",
+  "Manufacturer": "NVIDIA", "IsSigned": true, "Signer": "Microsoft Windows Hardware Compatibility Publisher",
+  "ClassGuid": "{4d36e968-e325-11ce-bfc1-08002be10318}", "HardWareID": "PCI\\VEN_10DE&DEV_2786&SUBSYS_40E91458"},
+ {"DeviceID": "USB\\VID_0BDA&PID_8153\\000001", "DeviceName": "Realtek USB GbE Family Controller",
+  "DriverVersion": "10.50.511.2022", "DriverDate": "2022-05-11T00:00:00Z", "InfName": "oem9.inf", "DriverProviderName": "Realtek",
+  "Manufacturer": "Realtek", "IsSigned": true, "Signer": "Microsoft Windows Hardware Compatibility Publisher",
+  "ClassGuid": "{4d36e972-e325-11ce-bfc1-08002be10318}", "HardWareID": "USB\\VID_0BDA&PID_8153&REV_3100"},
+ {"DeviceID": "ROOT\\LEGACYCAP\\0000", "DeviceName": "Legacy Capture Filter", "DriverVersion": "1.0.0.7", "DriverDate": null,
+  "InfName": "oem3.inf", "DriverProviderName": "Hobby Soft", "Manufacturer": "Hobby Soft", "IsSigned": false, "Signer": null,
+  "ClassGuid": "{4d36e96c-e325-11ce-bfc1-08002be10318}", "HardWareID": "ROOT\\LegacyCap"}
+]

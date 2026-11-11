@@ -1,0 +1,21 @@
+# SafeDriver weekly update check. A systemd USER unit: it runs as you, without
+# root, only reads hardware information, and never installs anything.
+# It exits as soon as the check is done; nothing stays running.
+#
+# Installed by:  sudo tools/install_helper.sh --with-timer
+# Or by hand:    cp contrib/systemd/driver-installer.* ~/.config/systemd/user/
+# Run once now:  systemctl --user start driver-installer.service
+[Unit]
+Description=SafeDriver: check for driver and firmware updates
+Documentation=https://example.invalid/driver-installer
+ConditionPathExists=/usr/local/bin/driver-installer
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/driver-installer check --notify --quiet
+# `check` exits 1 when updates are available; that is a result, not a failure.
+SuccessExitStatus=1
+Nice=19
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+TimeoutStartSec=10min

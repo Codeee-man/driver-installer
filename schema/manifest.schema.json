@@ -1,0 +1,413 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/driver-installer/schema/manifest.schema.json",
+  "title": "SafeDriver update manifest",
+  "description": "A signed index of driver, firmware and microcode packages. The manifest never embeds payloads; it points at the upstream download and pins its size, SHA-256 and publisher signature. Authenticity of the manifest itself comes from a detached Ed25519 signature over the exact file bytes (manifest.json.sig, base64), checked against a public key pinned in the client.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "sequence",
+    "generated",
+    "expires",
+    "publisher",
+    "signing",
+    "packages"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Schema major.minor (currently 1.1). Clients reject an unknown major version.",
+      "type": "string",
+      "pattern": "^1\\.[0-9]+$"
+    },
+    "sequence": {
+      "description": "Monotonically increasing number. Clients refuse a manifest whose sequence is lower than the last one they accepted (rollback protection).",
+      "type": "integer",
+      "minimum": 1
+    },
+    "generated": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires": {
+      "description": "Clients refuse the manifest after this time (freeze-attack protection).",
+      "type": "string",
+      "format": "date-time"
+    },
+    "publisher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "$ref": "#/$defs/httpsUrl"
+        }
+      }
+    },
+    "signing": {
+      "description": "Describes the detached signature that accompanies this file. Informational: the client trusts only its pinned keys, never a key named here.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "key_id"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "ed25519"
+        },
+        "key_id": {
+          "description": "First 16 hex characters of SHA-256 over the raw 32-byte public key.",
+          "type": "string",
+          "pattern": "^[a-f0-9]{16}$"
+        }
+      }
+    },
+    "packages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/package"
+      }
+    }
+  },
+  "$defs": {
+    "httpsUrl": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "sha256": {
+      "description": "Lower-case hex SHA-256.",
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "hardwareId": {
+      "description": "Normalised, lower-case device identifier. pci:VVVV:DDDD[:SVSV:SDSD], usb:VVVV:PPPP, cpu:<vendor>:<family>-<model>-<stepping> (hex), fwupd:<guid>, dmi:<sys_vendor>:<product>, or raw:<platform hardware id> for anything else.",
+      "type": "string",
+      "pattern": "^(pci:[0-9a-f]{4}:[0-9a-f]{4}(:[0-9a-f]{4}:[0-9a-f]{4})?|usb:[0-9a-f]{4}:[0-9a-f]{4}|cpu:[a-z0-9]+:[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}|fwupd:[0-9a-f-]{36}|dmi:[^:]+:.+|raw:.+)$"
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "vendor",
+        "category",
+        "version",
+        "platform",
+        "hardware_ids",
+        "install",
+        "upstream"
+      ],
+      "properties": {
+        "id": {
+          "description": "Stable unique identifier, e.g. intel.wifi.ax210.windows.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "vendor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "enum": [
+            "driver",
+            "firmware",
+            "microcode"
+          ]
+        },
+        "version": {
+          "description": "Version as reported by the platform after install (Windows DriverVersion, fwupd version, package version). Compared numerically, component by component.",
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)*([-+~][A-Za-z0-9.+~-]+)?$"
+        },
+        "release_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "severity": {
+          "enum": [
+            "security",
+            "recommended",
+            "optional"
+          ]
+        },
+        "release_notes_url": {
+          "$ref": "#/$defs/httpsUrl"
+        },
+        "min_installed_version": {
+          "description": "Do not offer this package to systems below this version (stepping-stone updates).",
+          "type": "string"
+        },
+        "platform": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "os",
+            "arch"
+          ],
+          "properties": {
+            "os": {
+              "enum": [
+                "windows",
+                "linux"
+              ]
+            },
+            "arch": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "x86_64",
+                  "aarch64",
+                  "x86"
+                ]
+              }
+            },
+            "min_os_build": {
+              "description": "Windows only: minimum build number, e.g. 19045.",
+              "type": "integer"
+            },
+            "distros": {
+              "description": "Linux only: os-release ID values this package applies to. Omit for distro-independent packages (fwupd cabinets).",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "hardware_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/hardwareId"
+          }
+        },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "url",
+            "filename",
+            "size",
+            "sha256",
+            "format",
+            "signature"
+          ],
+          "properties": {
+            "url": {
+              "$ref": "#/$defs/httpsUrl"
+            },
+            "mirrors": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/httpsUrl"
+              }
+            },
+            "filename": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$"
+            },
+            "size": {
+              "description": "Exact size in bytes. The download is aborted as soon as it is exceeded.",
+              "type": "integer",
+              "minimum": 1
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "format": {
+              "enum": [
+                "cab",
+                "zip",
+                "fwupd-cab",
+                "deb",
+                "rpm",
+                "pkg"
+              ],
+              "description": "cab/zip: driver package for pnputil. fwupd-cab: firmware for fwupd. deb/rpm/pkg: local package for apt/dnf|zypper/pacman."
+            },
+            "signature": {
+              "description": "Publisher signature that must verify after the SHA-256 check and before extraction.",
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "subject"
+                  ],
+                  "properties": {
+                    "type": {
+                      "const": "authenticode"
+                    },
+                    "subject": {
+                      "description": "Substring that must appear in the signer certificate subject, e.g. 'O=Intel Corporation'.",
+                      "type": "string"
+                    },
+                    "certificate_thumbprint": {
+                      "description": "Optional pin: SHA-1 certificate thumbprint as reported by Windows.",
+                      "type": "string",
+                      "pattern": "^[A-F0-9]{40}$"
+                    },
+                    "target": {
+                      "description": "artifact: the downloaded file itself is Authenticode-signed (signed .cab). catalog: the .cat files inside the package are checked after extraction (use for .zip).",
+                      "enum": [
+                        "artifact",
+                        "catalog"
+                      ],
+                      "default": "artifact"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "signature_url",
+                    "fingerprint"
+                  ],
+                  "properties": {
+                    "type": {
+                      "const": "gpg"
+                    },
+                    "signature_url": {
+                      "$ref": "#/$defs/httpsUrl"
+                    },
+                    "fingerprint": {
+                      "description": "Full fingerprint of the key that must have made the detached signature. The key itself must be in the client's pinned keyring.",
+                      "type": "string",
+                      "pattern": "^[A-F0-9]{40,64}$"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "verifier"
+                  ],
+                  "properties": {
+                    "type": {
+                      "const": "delegated"
+                    },
+                    "verifier": {
+                      "description": "Signature is checked by the installing tool itself.",
+                      "enum": [
+                        "fwupd",
+                        "apt",
+                        "dnf",
+                        "pacman",
+                        "zypper"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "The download. May be omitted only for a package-manager install of a named repository package, which the package manager fetches and verifies itself."
+        },
+        "install": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "reboot_required"
+          ],
+          "properties": {
+            "method": {
+              "enum": [
+                "pnputil",
+                "fwupd",
+                "package-manager"
+              ]
+            },
+            "inf_path": {
+              "description": "pnputil only: path of the .inf inside the extracted archive. Without it every .inf in the package is added.",
+              "type": "string",
+              "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_][A-Za-z0-9_./\\\\ -]*\\.[iI][nN][fF]$"
+            },
+            "package_name": {
+              "description": "package-manager only: repository package to install.",
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$"
+            },
+            "reboot_required": {
+              "type": "boolean"
+            },
+            "snapshot_required": {
+              "description": "If true the client refuses to install this package when no restore point or snapshot could be created, with no override. If false (default) the user is asked whether to continue.",
+              "type": "boolean",
+              "default": false
+            }
+          }
+        },
+        "upstream": {
+          "description": "Where this entry came from, so reviewers and users can check it independently.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "reference_url"
+          ],
+          "properties": {
+            "source": {
+              "enum": [
+                "vendor",
+                "microsoft-update-catalog",
+                "lvfs",
+                "distro"
+              ]
+            },
+            "reference_url": {
+              "$ref": "#/$defs/httpsUrl"
+            }
+          }
+        },
+        "class_guid": {
+          "description": "Windows only: INF device setup class GUID. When present, the package is offered only to devices of this class, which separates e.g. the display and audio functions of one GPU.",
+          "type": "string",
+          "pattern": "^\\{[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\\}$"
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "artifact"
+          ]
+        },
+        {
+          "properties": {
+            "install": {
+              "properties": {
+                "method": {
+                  "const": "package-manager"
+                }
+              },
+              "required": [
+                "package_name"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

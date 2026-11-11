@@ -1,0 +1,14 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: sudo apt-get update && sudo apt-get install -y gnupg libegl1 libxkbcommon0
+      - run: pip install cryptography pytest jsonschema PySide6
+      - run: python -c "import json, jsonschema; s = json.load(open('schema/manifest.schema.json')); jsonschema.Draft202012Validator(s).validate(json.load(open('schema/example.manifest.json')))"
+      - run: sh -n tools/install_helper.sh && sh -n tools/pin_key.sh
+      - run: QT_QPA_PLATFORM=offscreen python -m pytest -q
