@@ -219,7 +219,7 @@ def test_cli_prompts_and_flags_for_missing_blocklist_and_reports_alerts(win_env,
     raw, sig = pin(demo.manifest_shell([serve_bad_package(win_env)]))
     (win_env.tmp / "manifest.json").write_bytes(raw)
     (win_env.tmp / "manifest.json.sig").write_bytes(sig)
-    monkeypatch.setattr(engine, "_precheck_blocklist", lambda *a: "")       # pretend the user-side check was skipped
+    monkeypatch.setattr(engine, "_inspect_driver_package", lambda *a: None)  # pretend the user-side check was skipped
     code = cli.main(["update", "--all", "--apply", "-y", "--manifest", str(win_env.tmp / "manifest.json")])
     err = capsys.readouterr().err
     assert code == common.EXIT_SECURITY and "SECURITY ALERT: vuln.sys" in err and "Nothing was installed" in err

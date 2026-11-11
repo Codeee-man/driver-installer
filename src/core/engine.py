@@ -26,12 +26,13 @@ import re
 import secrets
 import shutil
 import tempfile
+import zipfile
 from pathlib import Path
 
 from . import common, elevation, installer, manifest, restore, trust, verifier
 from .common import ElevationError, InstallError, VerificationError
 from .discovery import linux_lvfs, ms_catalog
-from .model import Device, Update
+from .model import CHECK_ORDER, CHECK_SHORT, FAILED, NOT_APPLICABLE, PASSED, SKIPPED, Device, Update
 from .security import loldrivers
 
 MAX_PLAN_ITEMS = 64
@@ -49,6 +50,7 @@ class Context:
     demo: bool = False                    # fake payloads: never installs
     discover: bool | None = None          # None: automatic (on when no manifest is loaded)
     blocklist: object = None              # session copy of the LOLDrivers feed; False = unavailable
+    blocklist_error: str = ""             # why the feed is unavailable, for the check record
     notes: list[str] = dataclasses.field(default_factory=list)   # non-fatal problems to show the user
 
 
@@ -112,6 +114,11 @@ def find_all_updates(devices: list[Device], upgrades: dict[str, dict], ctx: Cont
 
 
 # ----------------------------------------------------------------- verify
+# Each update gets one record per check (model.CHECK_ORDER) with a plain-language reason, so
+# front ends can show exactly what was verified. "not_applicable" means another component
+# owns that check (fwupd, the package manager) or it does not apply to this kind of package;
+# "skipped" means it applies but could not be done here, which front ends show as "Partial".
+
 def session_blocklist(ctx: Context):
     """LOLDrivers feed for the early, unprivileged check. Fetched once per session, in memory."""
     if ctx.blocklist is None:
@@ -119,19 +126,9 @@ def session_blocklist(ctx: Context):
             ctx.blocklist = loldrivers.fetch(allow_loopback_http=ctx.allow_loopback_http)
         except loldrivers.BlocklistUnavailable as exc:
             ctx.blocklist = False
+            ctx.blocklist_error = str(exc)
             ctx.notes.append(f"LOLDrivers blocklist unavailable: {exc}")
     return ctx.blocklist or None
-
-
-def _precheck_blocklist(update: Update, ctx: Context, path: Path) -> str:
-    art, method = update.package["artifact"], update.package["install"]["method"]
-    if method != "pnputil" or ctx.demo:
-        return ""
-    blocklist = session_blocklist(ctx)
-    checked = loldrivers.check_archive(path, art["format"], blocklist) if blocklist else None
-    if checked is None:
-        return "; LOLDrivers check runs at install"
-    return f"; LOLDrivers: {len(checked)} .sys file(s) clean"
 
 
 def _purge(ctx: Context, sha256: str) -> None:
@@ -143,45 +140,179 @@ def _purge(ctx: Context, sha256: str) -> None:
         leftover.unlink(missing_ok=True)
 
 
-def _verify_catalog_update(update: Update, ctx: Context, progress=None) -> None:
+_NOT_YET = "not checked yet"
+
+
+def _record_delegated(update: Update) -> None:
+    """Updates whose verification belongs to fwupd or the package manager."""
+    pkg = update.package
+    if pkg is None:                                    # firmware update fwupd found on LVFS
+        update.set_check("sha256", NOT_APPLICABLE, "fwupd downloads the firmware and compares its checksum "
+                                                   "with the LVFS metadata")
+        update.set_check("manifest", NOT_APPLICABLE, "listed in LVFS metadata, whose signature fwupd verifies")
+        update.set_check("blocklist", NOT_APPLICABLE, "device firmware, not a Windows kernel driver")
+        update.set_check("publisher", NOT_APPLICABLE, "the firmware's signature is checked by fwupd and the device")
+        return
+    tool = "the package manager"
+    if pkg.get("origin") == "linux-repo":
+        update.set_check("manifest", NOT_APPLICABLE, "recommended by the distribution's own driver tool; "
+                                                     "not listed in a SafeDriver manifest")
+    else:
+        update.set_check("manifest", PASSED, "listed in a manifest whose Ed25519 signature matches a pinned key")
+    update.set_check("sha256", NOT_APPLICABLE, f"downloaded from the distribution repository; {tool} checks it")
+    update.set_check("blocklist", NOT_APPLICABLE, "Linux package, not a Windows kernel driver")
+    update.set_check("publisher", NOT_APPLICABLE, f"{tool} verifies the repository signature with the "
+                                                  "distribution's keys")
+
+
+def _unpack_for_inspection(path: Path, fmt: str, dest: Path) -> bool:
+    """Unpack a driver package so its .sys and .cat files can be checked. False if it cannot be done here."""
+    if fmt == "zip":
+        try:
+            installer.safe_extract_zip(path, dest)
+        except (InstallError, OSError, zipfile.BadZipFile) as exc:
+            raise VerificationError(f"the driver package could not be unpacked safely: {exc}") from exc
+        return True
+    if fmt == "cab" and common.OS_NAME == "windows":
+        res = common.run(["expand", "-F:*", str(path), str(dest)], timeout=600)
+        if res is None or res.rc != 0:
+            raise VerificationError("the driver cabinet could not be unpacked")
+        return True
+    return False
+
+
+def _inspect_driver_package(update: Update, ctx: Context, path: Path) -> None:
+    """User-side LOLDrivers check and catalog-signature check of an unpacked driver package.
+    The elevated helper repeats both before installing; this run is what makes the result
+    visible before the user decides."""
+    art = update.package["artifact"]
+    sig = art["signature"]
+    catalog_signed = sig["type"] == "authenticode" and sig.get("target", "artifact") == "catalog"
+    if ctx.demo:
+        update.set_check("blocklist", SKIPPED, "demo payload: random bytes, not a driver package")
+        return
+    tmp = Path(tempfile.mkdtemp(prefix="sd-inspect-"))
+    try:
+        if not _unpack_for_inspection(path, art["format"], tmp):
+            why = "a .cab can only be unpacked on Windows; the installer checks it again before installing"
+            update.set_check("blocklist", SKIPPED, why)
+            if catalog_signed:
+                update.set_check("publisher", SKIPPED, why)
+            return
+        blocklist = session_blocklist(ctx)
+        if blocklist is None:
+            update.set_check("blocklist", SKIPPED, f"LOLDrivers database offline ({ctx.blocklist_error or 'unreachable'}); "
+                                                   "checked again before installing")
+        else:
+            try:
+                checked = loldrivers.check_directory(tmp, blocklist)
+            except loldrivers.SecurityAlert as alert:
+                update.set_check("blocklist", FAILED, str(alert))
+                raise
+            update.set_check("blocklist", PASSED, f"{len(checked)} .sys file(s) compared with {len(blocklist)} "
+                                                  "known vulnerable or malicious driver hashes: no match"
+                             if checked else "the package contains no .sys files")
+        if catalog_signed:
+            try:
+                cats = verifier.verify_catalogs(tmp, sig["subject"], sig.get("certificate_thumbprint"))
+            except VerificationError as exc:
+                update.set_check("publisher", FAILED, str(exc))
+                raise
+            update.set_check("publisher", PASSED, f"Authenticode: {', '.join(cats)} signed by {sig['subject']}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)        # unpacked files never stay on disk
+
+
+def _download_manifest_package(update: Update, ctx: Context, progress=None) -> Path:
     pkg, art = update.package, update.package["artifact"]
+    sig = art["signature"]
+    if ctx.demo:
+        update.set_check("manifest", SKIPPED, "demo manifest, signed with a throwaway key that is not pinned")
+    else:
+        update.set_check("manifest", PASSED, "listed in a manifest whose Ed25519 signature matches a pinned key")
+    try:
+        path = verifier.secure_download(art["url"], art["sha256"], art["size"], ctx.quarantine, art["filename"],
+                                        allow_loopback_http=ctx.allow_loopback_http, progress=progress)
+    except VerificationError as exc:
+        update.set_check("sha256", FAILED, str(exc))
+        raise
+    update.sha256, update.path = art["sha256"], str(path)
+    update.set_check("sha256", PASSED, f"{art['size']} bytes match the SHA-256 in the signed manifest")
+    if ctx.demo:
+        update.set_check("publisher", SKIPPED, "demo payload has no publisher signature")
+        return path
+    try:
+        if sig["type"] == "authenticode" and sig.get("target", "artifact") == "artifact":
+            info = verifier.verify_authenticode(path, sig["subject"], sig.get("certificate_thumbprint"))
+            update.set_check("publisher", PASSED, f"Authenticode signature by {info.subject}")
+        elif sig["type"] == "gpg":
+            sig_file = verifier.fetch_small(sig["signature_url"], ctx.quarantine / (path.name + ".sig"),
+                                            allow_loopback_http=ctx.allow_loopback_http)
+            verifier.verify_gpg(path, sig_file, sig["fingerprint"])
+            update.signature_file = str(sig_file)
+            update.set_check("publisher", PASSED, f"GPG signature by pinned key {sig['fingerprint']}")
+        elif sig["type"] == "delegated":
+            update.set_check("publisher", NOT_APPLICABLE, f"checked by {sig['verifier']} when installing")
+    except VerificationError as exc:
+        update.set_check("publisher", FAILED, str(exc))
+        raise
+    return path
+
+
+def _download_catalog_package(update: Update, ctx: Context, progress=None) -> Path:
+    pkg, art = update.package, update.package["artifact"]
+    update.set_check("manifest", NOT_APPLICABLE, "found in the Microsoft Update Catalog, not in a signed manifest; "
+                                                 "Microsoft's driver signature is required instead")
     info = ms_catalog.resolve_download(pkg)
-    path, digest, size = verifier.download_from_host(
-        info.url, ctx.quarantine, art["filename"], host_ok=ms_catalog.is_download_host,
-        max_size=ms_catalog.MAX_DRIVER_BYTES, expected_sha1=info.sha1 or None, expected_sha256=info.sha256 or None,
-        allow_loopback_http=ctx.allow_loopback_http, progress=progress)
+    try:
+        path, digest, size = verifier.download_from_host(
+            info.url, ctx.quarantine, art["filename"], host_ok=ms_catalog.is_download_host,
+            max_size=ms_catalog.MAX_DRIVER_BYTES, expected_sha1=info.sha1 or None,
+            expected_sha256=info.sha256 or None, allow_loopback_http=ctx.allow_loopback_http, progress=progress)
+    except VerificationError as exc:
+        update.set_check("sha256", FAILED, str(exc))
+        raise
     art.update(url=info.url, sha256=digest, size=size)
     update.sha256, update.path = digest, str(path)
-    update.detail = ("downloaded from Microsoft; " + ("catalog digest OK" if info.sha1 or info.sha256 else
-                     "catalog published no digest") + "; Microsoft hardware-publisher signature is checked at install"
-                     + _precheck_blocklist(update, ctx, path))
-    update.status = "verified"
+    if info.sha1 or info.sha256:
+        update.set_check("sha256", PASSED, f"{size} bytes match the {'SHA-256' if info.sha256 else 'SHA-1'} "
+                                           "digest Microsoft publishes for this file")
+    else:
+        update.set_check("sha256", SKIPPED, "Microsoft published no digest for this file; it was hashed locally "
+                                            "only, so later steps can detect changes")
+    return path
+
+
+def _summary(update: Update) -> str:
+    words = {PASSED: "OK", SKIPPED: "skipped", FAILED: "FAILED"}
+    return "; ".join(f"{CHECK_SHORT[c.key]} {words[c.state]}" for c in update.checks if c.state in words)
 
 
 def verify_update(update: Update, ctx: Context, progress=None) -> None:
-    """Download and verify one update as the ordinary user. Sets update.status; never raises."""
-    art = (update.package or {}).get("artifact")
+    """Download and verify one update as the ordinary user, recording every check on
+    update.checks. Sets update.status ("verified" / "failed"; "delegated" is left alone)."""
+    pkg = update.package
+    art = (pkg or {}).get("artifact")
     if not art:
-        return  # fwupd-managed or repository package: verified by fwupd / the package manager
+        _record_delegated(update)
+        return
+    for key in CHECK_ORDER:
+        update.set_check(key, SKIPPED, _NOT_YET)
     try:
-        if update.package.get("origin") == "ms-catalog":
-            return _verify_catalog_update(update, ctx, progress)
-        sig = art["signature"]
-        path = verifier.secure_download(art["url"], art["sha256"], art["size"], ctx.quarantine, art["filename"],
-                                        allow_loopback_http=ctx.allow_loopback_http, progress=progress)
-        sig_file = ""
-        if ctx.demo:
-            detail = "demo payload: publisher signature step skipped"
+        if pkg.get("origin") == "ms-catalog":
+            path = _download_catalog_package(update, ctx, progress)
         else:
-            if sig["type"] == "gpg":
-                sig_file = str(verifier.fetch_small(sig["signature_url"], ctx.quarantine / (path.name + ".sig"),
-                                                    allow_loopback_http=ctx.allow_loopback_http))
-            detail = verifier.verify_publisher(update.package, path, sig_file)
-        detail += _precheck_blocklist(update, ctx, path)
-        update.status, update.detail = "verified", "SHA-256 OK; " + detail
-        update.path, update.signature_file = str(path), sig_file
+            path = _download_manifest_package(update, ctx, progress)
+        if pkg["install"]["method"] == "pnputil":
+            _inspect_driver_package(update, ctx, path)
+        else:
+            update.set_check("blocklist", NOT_APPLICABLE, "not a Windows kernel driver package")
+        update.status, update.detail = "verified", _summary(update)
     except (VerificationError, ms_catalog.CatalogError) as exc:
         _purge(ctx, update.sha256 or art.get("sha256", ""))   # also when a later check fails after the hash passed
+        for c in update.checks:
+            if c.reason == _NOT_YET:
+                update.set_check(c.key, SKIPPED, "not reached: an earlier step failed")
         update.status, update.detail, update.path = "failed", f"{exc} - file purged", ""
 
 
@@ -271,6 +402,7 @@ def apply(updates: list[Update], ctx: Context, *, allow_without_snapshot: bool =
         for u in todo:
             if update_key(u) in (result.get("alerts") or []):
                 _purge(ctx, u.sha256)
+                u.set_check("blocklist", FAILED, result.get("detail", "blocked"))
                 u.status, u.detail, u.path = "failed", result.get("detail", "blocked") + " - file purged", ""
     common.audit("apply.result", plan=plan_id, status=result.get("status"))
     return result

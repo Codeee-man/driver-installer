@@ -132,10 +132,11 @@ def test_apply_as_ordinary_user_requests_elevation_for_the_helper_only(win_env, 
     assert argv[:2] == [sys.executable, "-I"] and argv[2].endswith("helper_main.py") and argv[3] == "--apply-plan"
     plan = json.loads(Path(argv[4]).read_text())
     assert plan["items"][0]["package_id"] == "intel.wifi.ax210" and plan["allow_without_snapshot"] is False
-    # order inside the helper: lock staging dir, catalog signature, restore point, then pnputil
+    # catalog signature checked once before elevation, then inside the helper: lock staging dir,
+    # catalog signature again, restore point, then pnputil
     kinds = [p if p != "powershell" else ("authenticode" if "SD_FILE" in e else "restore")
              for p, _, e in win_env.runner.calls if p != "powershell" or "SD_FILE" in e or "SD_DESC" in e]
-    assert kinds == ["icacls", "authenticode", "restore", "pnputil"]
+    assert kinds == ["authenticode", "icacls", "authenticode", "restore", "pnputil"]
     assert json.loads((win_env.tmp / "system" / "results" / f"{plan['plan_id']}.json").read_text())["status"] == "ok"
 
 
@@ -214,6 +215,13 @@ def test_helper_rejects_packages_missing_from_the_manifest_and_bad_plans(win_env
 def test_catalog_from_another_publisher_stops_the_install(win_env, as_admin):
     win_env.runner.on("powershell", windows_powershell(signer=authenticode_json(subject="CN=Evil, O=Evil Corp")))
     ctx, updates = win_env.verified_updates()
+    assert updates[0].status == "failed" and updates[0].check("publisher").state == "failed"   # caught before elevation
+    assert "not the pinned publisher" in updates[0].check("publisher").reason and updates[0].path == ""
+    # and if the catalog is swapped after the user-side check, the helper still refuses it
+    win_env.runner.on("powershell", windows_powershell())
+    ctx, updates = win_env.verified_updates()
+    assert updates[0].status == "verified"
+    win_env.runner.on("powershell", windows_powershell(signer=authenticode_json(subject="CN=Evil, O=Evil Corp")))
     result = engine.apply(updates, ctx)
     assert result["status"] == "refused" and "not the pinned publisher" in result["items"][0]["detail"]
     assert installed(win_env) == [] and restore_points(win_env) == 0     # refused before any restore point

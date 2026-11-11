@@ -71,7 +71,7 @@ umask 022
 rm -rf -- "$DESTDIR$LIB"
 install -d -o root -g root -m 0755 "$DESTDIR$LIB" "$DESTDIR$BIN"
 install -o root -g root -m 0644 "$SRC"/src/*.py "$DESTDIR$LIB/"
-for pkg in core core/security core/discovery; do
+for pkg in core core/security core/discovery ui; do
     install -d -o root -g root -m 0755 "$DESTDIR$LIB/$pkg"
     install -o root -g root -m 0644 "$SRC/src/$pkg"/*.py "$DESTDIR$LIB/$pkg/"
 done

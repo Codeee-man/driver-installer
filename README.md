@@ -6,7 +6,7 @@ a dry-run default.
 
 ```
 pip install cryptography PySide6 pytest
-python -m pytest -q                                  # 217 tests, no admin rights or internet needed
+python -m pytest -q                                  # 249 tests, no admin rights or internet needed
 
 python src/cli.py scan                               # hardware vs. manifest (table, or --json)
 python src/cli.py check --notify                     # exit 0 up to date, 1 updates, 2+ error
@@ -33,7 +33,7 @@ Layout:
 - `src/core/` - engine: scanner, verifier, restore points, installer, elevation
 - `src/core/discovery/` - Microsoft Update Catalog, fwupd/LVFS and distro driver discovery
 - `src/core/security/` - LOLDrivers (BYOVD) blocklist check
-- `src/cli.py`, `src/gui.py` - front ends (never elevated); `src/helper_main.py` - the elevated helper
+- `src/cli.py`, `src/ui/` - front ends (never elevated); `src/helper_main.py` - the elevated helper
 - `schema/` - manifest schema 1.1 and an example
 - `tools/` - `install_helper.sh|.ps1`, `pin_key.sh`, `keygen.py`, `sign_manifest.py`
 - `contrib/` - systemd user units, polkit policy

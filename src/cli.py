@@ -151,9 +151,12 @@ def find_updates(args, ctx, devices, upgrades):
 
 
 def update_record(u) -> dict:
+    from ui import verification          # pure Python; does not load Qt
     return {"id": update_id(u), "name": u.name, "device": u.device.name, "installed": u.installed,
             "available": u.available, "source": u.source, "sha256": u.sha256, "status": u.status,
-            "detail": u.detail, "package": u.package and u.package["id"]}
+            "detail": u.detail, "package": u.package and u.package["id"],
+            "verification": verification.level(u) if u.checks else None,
+            "checks": [{"check": c.key, "state": c.state, "reason": c.reason} for c in u.checks]}
 
 
 # ------------------------------------------------------------------ output

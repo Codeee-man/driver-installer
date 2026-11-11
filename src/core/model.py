@@ -23,6 +23,30 @@ class Device:
     signed: bool | None = None
 
 
+# Itemised verification. Every update carries one record per check, in this order, so a
+# front end can say exactly what was and was not verified.
+PASSED, FAILED, SKIPPED, NOT_APPLICABLE = "passed", "failed", "skipped", "not_applicable"
+CHECK_ORDER = ("sha256", "manifest", "blocklist", "publisher")
+CHECK_LABELS = {
+    "sha256": "SHA-256 integrity",
+    "manifest": "Ed25519 manifest signature",
+    "blocklist": "LOLDrivers BYOVD check",
+    "publisher": "Publisher signature (Authenticode / GPG)",
+}
+CHECK_SHORT = {"sha256": "SHA-256", "manifest": "Ed25519", "blocklist": "LOLDrivers", "publisher": "publisher signature"}
+
+
+@dataclasses.dataclass
+class Check:
+    key: str                        # one of CHECK_ORDER
+    state: str                      # passed | failed | skipped | not_applicable
+    reason: str = ""
+
+    @property
+    def label(self) -> str:
+        return CHECK_LABELS.get(self.key, self.key)
+
+
 @dataclasses.dataclass
 class Update:
     device: Device
@@ -36,6 +60,17 @@ class Update:
     detail: str = ""
     path: str = ""                  # verified file in the quarantine directory
     signature_file: str = ""        # detached GPG signature, if any
+    checks: list[Check] = dataclasses.field(default_factory=list)
+
+    def set_check(self, key: str, state: str, reason: str = "") -> None:
+        """Record one check result, replacing any earlier one, keeping CHECK_ORDER."""
+        others = {c.key: c for c in self.checks if c.key != key}
+        others[key] = Check(key, state, reason)
+        # assign a new list in one step: the GUI may be reading it from another thread
+        self.checks = [others[k] for k in CHECK_ORDER if k in others]
+
+    def check(self, key: str) -> Check | None:
+        return next((c for c in self.checks if c.key == key), None)
 
 
 def parse_version(text: str | None) -> tuple[int, ...]:

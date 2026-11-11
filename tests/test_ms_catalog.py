@@ -165,8 +165,12 @@ def test_windows_needs_no_manifest_discovery_download_verify_install(win_box, as
     assert ctx.manifest is None and len(updates) == 2
     assert (update.installed, update.available, update.source) == ("22.250.1.2", "23.60.1.2", "Microsoft Update Catalog")
     engine.verify_update(update, ctx)
-    assert update.status == "verified" and "catalog digest OK" in update.detail
-    assert "LOLDrivers: 1 .sys file(s) clean" in update.detail
+    assert update.status == "verified"
+    assert [(c.key, c.state) for c in update.checks] == [("sha256", "passed"), ("manifest", "not_applicable"),
+                                                         ("blocklist", "passed"), ("publisher", "passed")]
+    assert "SHA-1 digest Microsoft publishes" in update.check("sha256").reason
+    assert update.check("blocklist").reason.startswith("1 .sys file(s) compared with")
+    assert "Microsoft Windows Hardware Compatibility Publisher" in update.check("publisher").reason
     assert update.sha256 == hashlib.sha256(catalog.cab).hexdigest() and Path(update.path).read_bytes() == catalog.cab
     form = next(q for m, path, q in catalog.requests if m == "POST")
     assert json.loads(form["updateIDs"][0])[0]["updateID"] == mock_http.NEWEST_X64
@@ -177,7 +181,7 @@ def test_windows_needs_no_manifest_discovery_download_verify_install(win_box, as
     args = runner.ran("pnputil")[0]
     assert args[0] == "/add-driver" and args[1].endswith("*.inf") and args[2:] == ["/subdirs", "/install"]
     checked = [e for _, _, e in runner.calls if "SD_FILE" in e]
-    assert len(checked) == 1 and checked[0]["SD_FILE"].endswith("netwtw14.cat")     # WHQL catalog signature
+    assert len(checked) == 2 and all(e["SD_FILE"].endswith("netwtw14.cat") for e in checked)   # before + in helper
 
 
 def test_catalog_digest_mismatch_purges_the_download(win_box, as_user):
@@ -246,7 +250,8 @@ def test_blocklisted_driver_from_the_catalog_is_stopped(win_box, as_admin):
     update, _ = discovered(ctx)
     ctx.blocklist = False                                        # user-side feed unavailable: helper must catch it
     engine.verify_update(update, ctx)
-    assert update.status == "verified" and "LOLDrivers check runs at install" in update.detail
+    assert update.status == "verified" and update.check("blocklist").state == "skipped"
+    assert "LOLDrivers database offline" in update.check("blocklist").reason
     result = engine.apply([update], ctx)
     assert result["status"] == "security_alert" and runner.ran("pnputil") == []
     assert not any("SD_DESC" in e for _, _, e in runner.calls)   # no restore point was even requested
