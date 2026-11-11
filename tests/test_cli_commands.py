@@ -172,6 +172,7 @@ def test_installed_helper_is_preferred(tmp_path, linux, monkeypatch, caplog):
     assert engine.helper_argv(Path("/p/plan.json"))[0] == str(helper)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX ownership and permission bits")
 def test_installed_helper_that_others_can_modify_is_refused_not_bypassed(tmp_path, linux, monkeypatch):
     helper = tmp_path / "driver-installer-helper"
     helper.write_text("#!/bin/sh\n")

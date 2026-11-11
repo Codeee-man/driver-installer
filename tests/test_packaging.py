@@ -186,7 +186,7 @@ def test_frozen_windows_build_prefers_program_files(tmp_path, windows, monkeypat
     monkeypatch.setattr(sys, "executable", str(tmp_path / "unzipped" / "driver-installer.exe"))
     (tmp_path / "unzipped").mkdir()
     (tmp_path / "unzipped" / "driver-installer-helper.exe").write_text("")
-    assert installer.helper_command("p.json")[0].endswith("unzipped/driver-installer-helper.exe")
+    assert Path(installer.helper_command("p.json")[0]) == tmp_path / "unzipped" / "driver-installer-helper.exe"
     installed = tmp_path / "ProgramFiles" / "driver-installer" / "driver-installer-helper.exe"
     installed.parent.mkdir(parents=True)
     installed.write_text("")
