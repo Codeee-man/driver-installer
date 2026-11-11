@@ -8,6 +8,7 @@ name: build
 on:
   push:
     tags: ["v*"]
+    branches: ["ci/build-test"]   # TEMPORARY: scratch-branch test run
   workflow_dispatch:
 
 permissions:
