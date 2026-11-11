@@ -26,8 +26,12 @@ PACKAGE_MANAGERS = ("apt-get", "dnf", "pacman", "zypper")
 _LOCAL_FORMATS = {"apt-get": "deb", "dnf": "rpm", "zypper": "rpm", "pacman": "pkg"}
 
 
-HELPER_LINUX = "/usr/local/bin/driver-installer-helper"
-HELPER_WINDOWS = ("driver-installer", "helper.exe")              # under %ProgramFiles%
+# Where an installed, root/Administrators-only helper may live, in order of preference.
+HELPER_LINUX = "/usr/local/bin/driver-installer-helper"                  # tools/install_helper.sh
+HELPER_LINUX_PACKAGED = "/usr/libexec/driver-installer/driver-installer-helper"   # the .deb package
+HELPER_WINDOWS_DIR = "driver-installer"                                   # under %ProgramFiles%
+HELPER_WINDOWS_NAMES = ("driver-installer-helper.exe", "helper.exe")      # release zip / source build
+HELPER_FROZEN_NAME = "driver-installer-helper"                            # next to a PyInstaller build
 REPO_HELPER = Path(__file__).resolve().parents[1] / "helper_main.py"
 log = logging.getLogger("safedriver")
 
@@ -38,36 +42,65 @@ def _admin_only(path: str) -> bool:
     return st.st_uid == 0 and not st.st_mode & 0o022
 
 
-def installed_helper() -> str | None:
-    """The system-installed elevated helper (tools/install_helper.sh / .ps1), or None.
+def _program_files() -> str:
+    return os.environ.get("ProgramFiles", r"C:\Program Files")
 
-    On Linux the helper and its directory must be writable by root only; a helper
-    that fails this is never used and never silently replaced by the repo copy."""
+
+def installed_helper() -> str | None:
+    """The system-installed elevated helper (install_helper.sh / .ps1, or the .deb), or None.
+
+    On Linux the helper and its directory must be writable by root only; a helper that
+    fails this is never used and never silently replaced by another copy."""
     if common.OS_NAME == "windows":
-        path = ntpath.join(os.environ.get("ProgramFiles", r"C:\Program Files"), *HELPER_WINDOWS)
-        return path if os.path.isfile(path) else None
-    if not os.path.isfile(HELPER_LINUX):
+        for name in HELPER_WINDOWS_NAMES:
+            path = ntpath.join(_program_files(), HELPER_WINDOWS_DIR, name)
+            if os.path.isfile(path):
+                return path
         return None
-    for part in (HELPER_LINUX, os.path.dirname(HELPER_LINUX)):
-        if not _admin_only(part):
-            raise ElevationError(f"{part} can be modified by non-administrators; refusing to elevate it. "
-                                 "Reinstall with tools/install_helper.sh")
-    return HELPER_LINUX
+    for candidate in (HELPER_LINUX, HELPER_LINUX_PACKAGED):
+        if not os.path.isfile(candidate):
+            continue
+        for part in (candidate, os.path.dirname(candidate)):
+            if not _admin_only(part):
+                raise ElevationError(f"{part} can be modified by non-administrators; refusing to elevate it. "
+                                     "Reinstall the package, or run tools/install_helper.sh")
+        return candidate
+    return None
+
+
+def _unprotected_helper() -> tuple[list[str], str]:
+    """(command prefix, description) for a helper that is NOT in a protected location."""
+    if getattr(sys, "frozen", False):                    # PyInstaller build (Windows zip, or a Linux test build)
+        exe_dir = Path(sys.executable).resolve().parent
+        name = HELPER_FROZEN_NAME + (".exe" if common.OS_NAME == "windows" else "")
+        helper = exe_dir / name
+        if not helper.is_file():
+            raise ElevationError(f"{name} is missing next to {Path(sys.executable).name}; reinstall the application")
+        return [str(helper)], str(helper)
+    appimage = os.environ.get("APPIMAGE")
+    if appimage and os.path.isfile(appimage) and common.OS_NAME == "linux":
+        # The AppImage's own mount is not visible to root, so elevate the AppImage file itself;
+        # its AppRun starts the helper when the first argument is --apply-plan. The runtime flag
+        # avoids needing FUSE as root (pkexec drops APPIMAGE_EXTRACT_AND_RUN from the environment).
+        return [appimage, "--appimage-extract-and-run"], appimage
+    # -I: isolated mode, so the elevated interpreter ignores PYTHON* variables and the user's site dir.
+    return [sys.executable, "-I", str(REPO_HELPER)], str(REPO_HELPER)
 
 
 def helper_command(plan_path) -> list[str]:
     """Command line of the elevated helper for a plan. Prefers the system-installed helper;
-    falls back to the copy next to this source tree with a warning."""
+    otherwise uses the one shipped with this copy of the program, with a warning."""
     helper = installed_helper()
     if helper:
         return [helper, "--apply-plan", str(plan_path)]
-    script = "tools\\install_helper.ps1" if common.OS_NAME == "windows" else "tools/install_helper.sh"
-    message = (f"running un-installed: elevating {REPO_HELPER}, which lives in a location ordinary "
-               f"users may be able to modify. Install the protected helper with {script}")
-    log.warning(message)
-    common.audit("elevation.warning", reason="helper not installed", helper=str(REPO_HELPER))
-    # -I: isolated mode, so the elevated interpreter ignores PYTHON* variables and the user's site dir.
-    return [sys.executable, "-I", str(REPO_HELPER), "--apply-plan", str(plan_path)]
+    prefix, where = _unprotected_helper()
+    if common.OS_NAME == "windows":
+        fix = "run install_helper.ps1 from an elevated PowerShell to move it into Program Files"
+    else:
+        fix = "install the .deb package or run tools/install_helper.sh"
+    log.warning(f"running un-installed: elevating {where}, which ordinary users may be able to modify; {fix}")
+    common.audit("elevation.warning", reason="helper not installed", helper=where)
+    return [*prefix, "--apply-plan", str(plan_path)]
 
 
 @dataclasses.dataclass

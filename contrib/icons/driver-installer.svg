@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Driver Installer icon: a terminal tile with a check-mark prompt. Original artwork, MIT. -->
+  <rect x="8" y="8" width="240" height="240" rx="36" fill="#050505"/>
+  <rect x="8.5" y="8.5" width="239" height="239" rx="35.5" fill="none" stroke="#1A3320" stroke-width="3"/>
+  <path d="M56 92 L96 128 L56 164" fill="none" stroke="#00FF66" stroke-width="18" stroke-linecap="square"/>
+  <rect x="112" y="152" width="88" height="18" fill="#00FF66"/>
+  <path d="M150 92 L170 112 L208 70" fill="none" stroke="#00A843" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

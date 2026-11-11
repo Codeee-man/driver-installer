@@ -2,3 +2,6 @@ __pycache__/
 .pytest_cache/
 *.key
 *.sig
+build/
+dist/
+*.AppImage

@@ -325,7 +325,13 @@ def cmd_update(args, parser) -> int:
 
 
 def cmd_gui(args) -> int:
-    import gui
+    try:
+        import gui
+        import PySide6  # noqa: F401
+    except ImportError:
+        print("The graphical interface needs PySide6: install python3-pyside6.qtwidgets (Debian/Ubuntu) "
+              "or `pip install PySide6`. The command line works without it.", file=sys.stderr)
+        return EXIT_FAILED
     with tempfile.TemporaryDirectory(prefix="safedriver-demo-") as tmp:
         return gui.run(load_context(args), Path(tmp), args.screenshot, theme=args.theme)
 
