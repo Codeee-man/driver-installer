@@ -6,7 +6,7 @@
     driver-installer update --all                    download, verify, print the plan (DRY RUN)
     driver-installer update --all --apply [-y]       ...then confirm, elevate and install
     driver-installer update ID [ID ...] --apply      only the named packages
-    driver-installer gui [--demo]
+    driver-installer gui [--demo] [--theme matrix|clean]
     driver-installer verify-log
 
 Nothing is installed without --apply. With --apply, -y/--yes skips the
@@ -90,6 +90,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     gui = sub.add_parser("gui", parents=[shared], help="open the graphical interface")
     gui.add_argument("--demo", action="store_true", help="fake local manifest with one tampered package")
+    gui.add_argument("--theme", choices=("matrix", "clean"),
+                     help="start with this theme (default: the one chosen last time in the window, else matrix)")
     gui.add_argument("--screenshot", help=argparse.SUPPRESS)
 
     sub.add_parser("verify-log", parents=[shared], help="check the audit log hash chain")
@@ -325,7 +327,7 @@ def cmd_update(args, parser) -> int:
 def cmd_gui(args) -> int:
     import gui
     with tempfile.TemporaryDirectory(prefix="safedriver-demo-") as tmp:
-        return gui.run(load_context(args), Path(tmp), args.screenshot)
+        return gui.run(load_context(args), Path(tmp), args.screenshot, theme=args.theme)
 
 
 def main(argv: list[str] | None = None) -> int:

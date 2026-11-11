@@ -21,9 +21,9 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFram
 from core import common, engine
 from core.common import ElevationError
 from core.model import FAILED
-from . import dialogs, theme
+from . import dialogs, settings, theme
 from . import verification as vf
-from .delegates import ROW_HEIGHT, BadgeDelegate, CheckDelegate, NameDelegate
+from .delegates import BadgeDelegate, CheckDelegate, NameDelegate
 from .models import COL_DEVICE, COL_SELECT, COL_STATUS, COL_VERIFY, DriverTableModel
 from .popover import ChecksPopover
 from .workers import Worker
@@ -69,16 +69,21 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 14, 20, 16)
         layout.setSpacing(12)
 
-        # header: [log]   Driver Installer   [rescan]
+        # header: [log]   Driver Installer   [theme] [rescan]
         header = QGridLayout()
         header.setColumnStretch(0, 1)
         header.setColumnStretch(2, 1)
         self.btn_log = QPushButton("LOG", objectName="ghost", checkable=True, toolTip="Show the activity log")
         self.title = QLabel(TITLE, objectName="title", alignment=Qt.AlignCenter)
+        self.btn_theme = QPushButton(objectName="ghost")
         self.btn_rescan = QPushButton("RESCAN", objectName="ghost", toolTip="Scan hardware and check for updates again")
+        right = QHBoxLayout()
+        right.setSpacing(4)
+        right.addWidget(self.btn_theme)
+        right.addWidget(self.btn_rescan)
         header.addWidget(self.btn_log, 0, 0, Qt.AlignLeft | Qt.AlignVCenter)
         header.addWidget(self.title, 0, 1)
-        header.addWidget(self.btn_rescan, 0, 2, Qt.AlignRight | Qt.AlignVCenter)
+        header.addLayout(right, 0, 2, Qt.AlignRight | Qt.AlignVCenter)
         layout.addLayout(header)
         layout.addWidget(QFrame(objectName="rule"))
 
@@ -96,14 +101,12 @@ class MainWindow(QMainWindow):
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.view.verticalHeader().hide()
-        self.view.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
         hh = self.view.horizontalHeader()
         hh.setHighlightSections(False)
         hh.setSectionResizeMode(COL_DEVICE, QHeaderView.Stretch)
         for col, width in ((COL_STATUS, 190), (COL_VERIFY, 180), (COL_SELECT, 56)):
             hh.setSectionResizeMode(col, QHeaderView.Fixed)
             self.view.setColumnWidth(col, width)
-        hh.setFont(theme.mono_font(8, bold=True, spacing=1.2))
         self.badges = BadgeDelegate(self.view)
         self.view.setItemDelegateForColumn(COL_DEVICE, NameDelegate(self.view))
         self.view.setItemDelegateForColumn(COL_STATUS, self.badges)
@@ -134,6 +137,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(bar)
 
         self.btn_log.toggled.connect(self.log.setVisible)
+        self.btn_theme.clicked.connect(self.toggle_theme)
         self.btn_rescan.clicked.connect(self.start_scan)
         self.select_full.clicked.connect(self.toggle_full)
         self.btn_install.clicked.connect(lambda: self.do_install())
@@ -142,7 +146,41 @@ class MainWindow(QMainWindow):
         self._listener = self._log_record
         common.audit_log().listeners.append(self._listener)
         self.say("Ready.")
+        self.apply_theme(theme.current().name, save=False)
         self.update_controls()
+
+    # ------------------------------------------------------------- theme
+    def apply_theme(self, name: str, save: bool = True) -> None:
+        """Switch theme in place: stylesheet, header font, row height, labels, painted cells."""
+        t = theme.set_current(name)
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(theme.stylesheet())
+        self.view.horizontalHeader().setFont(theme.font(8, bold=True, spacing=1.2 if t.uppercase else None))
+        self.view.verticalHeader().setDefaultSectionSize(t.row_height)
+        self.btn_log.setText(t.header_labels["log"])
+        self.btn_rescan.setText(t.header_labels["rescan"])
+        self.btn_theme.setText(t.label)
+        other = theme.CLEAN if t.name == theme.MATRIX else theme.MATRIX
+        self.btn_theme.setToolTip(f"Theme: {t.name.capitalize()}. Click for {other.capitalize()}.")
+        self.btn_theme.setAccessibleName(f"Theme: {t.name}")
+        if self.popover is not None:
+            try:
+                self.popover.close()
+            except RuntimeError:
+                pass
+            self.popover = None
+        self.say(*getattr(self, "_said", ("Ready.", "")))     # re-render with this theme's prompt style
+        for widget in (self.status, self.title):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+        self.view.viewport().update()
+        self.view.horizontalHeader().viewport().update()
+        if save:
+            settings.save(theme=t.name)
+
+    def toggle_theme(self) -> None:
+        self.apply_theme(theme.CLEAN if theme.current().name == theme.MATRIX else theme.MATRIX)
 
     # ------------------------------------------------------------ helpers
     def _log_record(self, rec: dict) -> None:
@@ -152,7 +190,8 @@ class MainWindow(QMainWindow):
         QMetaObject.invokeMethod(self.log, "appendPlainText", Qt.QueuedConnection, Q_ARG(str, line))
 
     def say(self, text: str, kind: str = "") -> None:
-        self.status.setText("> " + text)
+        self._said = (text, kind)
+        self.status.setText(("> " if theme.current().name == theme.MATRIX else "") + text)
         self.status.setProperty("kind", kind)
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
@@ -336,11 +375,12 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
-def create(ctx: engine.Context, workdir: Path, autoscan: bool = False):
+def create(ctx: engine.Context, workdir: Path, autoscan: bool = False, theme_name: str | None = None):
     app = QApplication.instance() or QApplication(["driver-installer"])
     app.setApplicationName(TITLE)
     app.setStyle("Fusion")
-    app.setStyleSheet(theme.stylesheet())
+    theme.register_fonts()
+    theme.set_current(settings.startup_theme(theme_name))
     win = MainWindow(ctx, workdir)
     if autoscan:
         win.start_scan()
@@ -360,8 +400,8 @@ def settle(app, win, timeout: float = 60.0) -> None:
     raise TimeoutError("background work did not finish")
 
 
-def run(ctx: engine.Context, workdir: Path, shot: str | None = None) -> int:
-    app, win = create(ctx, workdir)
+def run(ctx: engine.Context, workdir: Path, shot: str | None = None, theme_name: str | None = None) -> int:
+    app, win = create(ctx, workdir, theme_name=theme_name)
     win.show()
     win.start_scan()                              # scan as soon as the window opens
     if shot:                                      # scripted walkthrough for headless screenshots; never installs

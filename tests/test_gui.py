@@ -368,3 +368,79 @@ def test_demo_mode_never_installs(tmp_path, windows, runner, monkeypatch):
     win.do_install()
     assert "Demo: nothing was installed" in win.status.text() and not win.log.isHidden()
     win.close()
+
+
+# ----------------------------------------------------------------- themes
+from ui import settings  # noqa: E402
+
+
+def badge_colours(win, update):
+    image = win.view.viewport().grab().toImage()
+    r = win.view.visualRect(win.model.index(row_of(win, update), COL_VERIFY))
+    return {image.pixelColor(x, y).name() for x in range(r.left(), r.right()) for y in range(r.top(), r.bottom())}
+
+
+def test_matrix_uses_the_bundled_pixel_font(window):
+    assert "VT323" in theme.register_fonts() or theme._fonts_registered
+    assert theme.current().name == "matrix" and theme.family() == "VT323" and theme.scale() > 1
+    assert theme.current().fonts[:6] == ("VT323", "Fixedsys Excelsior", "PxPlus IBM VGA8", "Terminus",
+                                         "Courier New", "Consolas")
+    assert (theme.FONT_DIR / "VT323-Regular.ttf").is_file() and (theme.FONT_DIR / "VT323-OFL.txt").is_file()
+    assert "font-family: 'VT323'" in QApplication_instance().styleSheet()
+
+
+def QApplication_instance():
+    from PySide6.QtWidgets import QApplication
+    return QApplication.instance()
+
+
+def test_theme_toggle_switches_in_place_and_is_remembered(window):
+    app, win, ups = window
+    assert win.btn_theme.text() == "[ MATRIX ]" and win.btn_log.text() == "LOG"
+    assert "#00ff66" in badge_colours(win, ups["full"])
+    QTest.mouseClick(win.btn_theme, Qt.LeftButton)
+    app.processEvents()
+    t = theme.current()
+    assert t.name == "clean" and win.btn_theme.text() == "[ CLEAN ]" and win.btn_rescan.text() == "Rescan"
+    assert t.colors["GREEN"].lower() in badge_colours(win, ups["full"])       # delegates repainted, no restart
+    assert "#00ff66" not in badge_colours(win, ups["full"])
+    assert theme.family() != "VT323" and "VT323" not in QApplication_instance().styleSheet()
+    assert win.view.verticalHeader().defaultSectionSize() == t.row_height
+    assert not win.status.text().startswith(">")                              # no terminal prompt in Clean
+    assert settings.load() == {"theme": "clean"} and settings.user_file().is_file()
+    QTest.mouseClick(win.btn_theme, Qt.LeftButton)
+    assert theme.current().name == "matrix" and win.status.text().startswith("> ")
+    assert settings.load() == {"theme": "matrix"}
+
+
+def test_remembered_theme_and_cli_override(tmp_path, windows, runner):
+    settings.save(theme="clean")
+    app, win = ui.create(engine.Context(manifest={"packages": []}), tmp_path)
+    assert theme.current().name == "clean" and win.btn_theme.text() == "[ CLEAN ]"
+    win.close()
+    app, win = ui.create(engine.Context(manifest={"packages": []}), tmp_path, theme="matrix")
+    assert theme.current().name == "matrix"
+    assert settings.load()["theme"] == "clean"                  # --theme is for one launch, not saved
+    win.close()
+
+
+def test_open_popover_is_closed_on_theme_change(window):
+    app, win, ups = window
+    win.open_details(win.model.index(row_of(win, ups["partial"]), COL_VERIFY))
+    assert win.popover is not None
+    win.toggle_theme()
+    assert win.popover is None
+
+
+def test_clean_theme_follows_system_light_or_dark():
+    assert theme.resolve("clean", light=True) is theme.CLEAN_LIGHT_THEME
+    assert theme.resolve("clean", light=False) is theme.CLEAN_DARK_THEME
+    assert theme.resolve("matrix", light=True) is theme.MATRIX_THEME
+    light = theme.set_current("clean", light=True)
+    try:
+        assert theme.BG == light.colors["BG"] and theme.BADGES["full"][0] == light.colors["GREEN"]
+        assert "#f4f5f7" in theme.stylesheet().lower()
+    finally:
+        theme.set_current("matrix")
+    with pytest.raises(ValueError):
+        theme.set_current("neon")

@@ -13,9 +13,15 @@ from core.model import FAILED, NOT_APPLICABLE, PASSED, SKIPPED
 from . import theme
 from . import verification as vf
 
-_STATE_COLOR = {PASSED: theme.ACCENT, FAILED: theme.RED, SKIPPED: theme.AMBER, NOT_APPLICABLE: theme.MUTED_DIM}
-_LEVEL_COLOR = {vf.FULL: theme.ACCENT, vf.PARTIAL: theme.AMBER, vf.NONE: theme.RED, vf.PENDING: theme.MUTED}
 WIDTH = 440
+
+
+def _state_color(state: str) -> str:
+    return {PASSED: theme.GREEN, FAILED: theme.RED, SKIPPED: theme.AMBER, NOT_APPLICABLE: theme.MUTED_DIM}[state]
+
+
+def _level_color(level: str) -> str:
+    return {vf.FULL: theme.GREEN, vf.PARTIAL: theme.AMBER, vf.NONE: theme.RED}.get(level, theme.MUTED)
 
 
 class ChecksPopover(QFrame):
@@ -29,9 +35,9 @@ class ChecksPopover(QFrame):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(14, 12, 14, 12)
         outer.setSpacing(10)
-        title = QLabel(f"VERIFICATION: {lvl.upper()}")
+        title = QLabel(theme.badge_text(f"Verification: {lvl}"))
         title.setObjectName("popoverTitle")
-        title.setStyleSheet(f"color: {_LEVEL_COLOR.get(lvl, theme.MUTED)};")
+        title.setStyleSheet(f"color: {_level_color(lvl)};")
         outer.addWidget(title)
         if vf.missing(update):
             hint = QLabel("Not done: " + ", ".join(c.label for c in vf.missing(update)))
@@ -44,12 +50,12 @@ class ChecksPopover(QFrame):
         row = 0
         for check in update.checks:
             symbol = QLabel(vf.SYMBOL[check.state])
-            symbol.setStyleSheet(f"color: {_STATE_COLOR[check.state]}; font-weight: 700;")
+            symbol.setStyleSheet(f"color: {_state_color(check.state)}; font-weight: 700;")
             symbol.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
             label = QLabel(f"{check.label}  ·  {vf.STATE_TEXT[check.state]}")
             label.setObjectName("checkLabel")
             if check.state != PASSED:
-                label.setStyleSheet(f"color: {_STATE_COLOR[check.state]};")
+                label.setStyleSheet(f"color: {_state_color(check.state)};")
             grid.addWidget(symbol, row, 0)
             grid.addWidget(label, row, 1)
             row += 1

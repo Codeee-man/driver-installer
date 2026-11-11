@@ -75,6 +75,8 @@ for pkg in core core/security core/discovery ui; do
     install -d -o root -g root -m 0755 "$DESTDIR$LIB/$pkg"
     install -o root -g root -m 0644 "$SRC/src/$pkg"/*.py "$DESTDIR$LIB/$pkg/"
 done
+install -d -o root -g root -m 0755 "$DESTDIR$LIB/ui/assets/fonts"
+install -o root -g root -m 0644 "$SRC"/src/ui/assets/fonts/* "$DESTDIR$LIB/ui/assets/fonts/"
 
 TMP=$(mktemp)
 trap 'rm -f "$TMP"' EXIT

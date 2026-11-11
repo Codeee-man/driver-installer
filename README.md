@@ -6,13 +6,14 @@ a dry-run default.
 
 ```
 pip install cryptography PySide6 pytest
-python -m pytest -q                                  # 249 tests, no admin rights or internet needed
+python -m pytest -q                                  # 260 tests, no admin rights or internet needed
 
 python src/cli.py scan                               # hardware vs. manifest (table, or --json)
 python src/cli.py check --notify                     # exit 0 up to date, 1 updates, 2+ error
 python src/cli.py update --all                       # download, verify, print the plan (dry run)
 python src/cli.py update --all --apply -y            # unattended install
 python src/cli.py gui --demo                         # GUI with fake packages; never installs
+python src/cli.py gui --theme clean                  # "matrix" (default) or "clean"; the in-app toggle is remembered
 ```
 
 Without a manifest the tool discovers updates itself: Microsoft Update Catalog on Windows
@@ -40,3 +41,5 @@ Layout:
 - `tests/` - pytest suite with recorded WMI fixtures
 - `docs/` - `ARCHITECTURE.md`, `PHASE2.md`, `SIGNING.md`; `TESTING_WINDOWS.md` at the top level
 - `poc/` - Phase 1 single-file proof of concept, superseded by `src/`
+
+The Matrix theme uses the bundled VT323 font (SIL Open Font License, `src/ui/assets/fonts/VT323-OFL.txt`).
