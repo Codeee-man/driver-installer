@@ -6,7 +6,7 @@ a dry-run default.
 
 ```
 pip install cryptography PySide6 pytest
-python -m pytest -q                                  # 260 tests, no admin rights or internet needed
+python -m pytest -q                                  # 278 tests, no admin rights or internet needed
 
 python src/cli.py scan                               # hardware vs. manifest (table, or --json)
 python src/cli.py check --notify                     # exit 0 up to date, 1 updates, 2+ error
@@ -20,6 +20,12 @@ Without a manifest the tool discovers updates itself: Microsoft Update Catalog o
 (hardware IDs are sent to Microsoft; `--no-discover` turns it off), fwupd/LVFS and the
 distro's driver tool on Linux. Every Windows driver package is checked against the
 LOLDrivers list of known vulnerable drivers before install.
+
+Releases: push a tag like `v1.0.0` and `.github/workflows/build.yml` tests on Windows and Linux,
+then attaches `driver-installer-windows.zip`, a `.deb` and an `.AppImage` (plus `SHA256SUMS`) to a
+draft release. Build locally with `python tools/build_linux.py all` or `py tools\build_windows.py`.
+On Windows, unzip and run `install_helper.ps1` from an elevated PowerShell to install into
+Program Files. None of the builds is code-signed yet.
 
 Before real use:
 

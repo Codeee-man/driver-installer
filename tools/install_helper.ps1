@@ -1,9 +1,17 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-  Build and install SafeDriver's elevated helper to %ProgramFiles%\driver-installer\helper.exe.
+  Install Driver Installer into %ProgramFiles%\driver-installer with an admin-only ACL.
 
 .DESCRIPTION
+  Two modes, chosen automatically:
+
+  Release folder (unzipped driver-installer-windows.zip, this script sits next to
+  driver-installer-helper.exe): copies the whole prebuilt folder to Program Files and
+  adds a Start menu shortcut. Nothing is built; no Python is needed.
+
+  Source checkout (tools\install_helper.ps1): builds the helper as described below.
+
   The helper is the only part of SafeDriver that runs elevated. Run from a
   checkout, it is a Python script in a folder your account can edit, so any
   program running as you could change what the UAC prompt elevates. This
@@ -16,6 +24,8 @@
   Requires: Python 3.10+ installed for all users, plus
       py -m pip install cryptography pyinstaller
 
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File .\install_helper.ps1      # from the unzipped release
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File tools\install_helper.ps1
 .EXAMPLE
@@ -33,11 +43,47 @@ $repo = Split-Path -Parent $PSScriptRoot
 $dest = Join-Path $env:ProgramFiles 'driver-installer'
 $entry = Join-Path $repo 'src\helper_main.py'
 
+$shortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Driver Installer.lnk'
+
 if ($Uninstall) {
     if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+    if (Test-Path -LiteralPath $shortcut) { Remove-Item -LiteralPath $shortcut -Force }
     Write-Host "Removed $dest. Audit log and state remain in $env:ProgramData\SafeDriver."
     return
 }
+
+function Set-AdminOnlyAcl([string]$path) {
+    # Administrators + SYSTEM: full control. Users: read and execute only.
+    & icacls $path /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not set the ACL on $path." }
+}
+
+# ---- Release folder: install the prebuilt program as it is.
+$prebuilt = Join-Path $PSScriptRoot 'driver-installer-helper.exe'
+if (Test-Path -LiteralPath $prebuilt) {
+    $here = (Resolve-Path -LiteralPath $PSScriptRoot).Path.TrimEnd('\')
+    if ($here -ieq $dest.TrimEnd('\')) { throw "Already installed in $dest; run this from the unzipped download instead." }
+    if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+    New-Item -ItemType Directory -Path $dest | Out-Null
+    Set-AdminOnlyAcl $dest
+    Copy-Item -Path (Join-Path $PSScriptRoot '*') -Destination $dest -Recurse -Force
+    foreach ($exe in 'driver-installer.exe', 'driver-installer-gui.exe', 'driver-installer-helper.exe') {
+        if (-not (Test-Path -LiteralPath (Join-Path $dest $exe))) { throw "$exe is missing from the release folder." }
+    }
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $shell.CreateShortcut($shortcut)
+    $link.TargetPath = Join-Path $dest 'driver-installer-gui.exe'
+    $link.WorkingDirectory = $dest
+    $link.Description = 'Driver Installer'
+    $link.Save()
+    $hash = (Get-FileHash -LiteralPath (Join-Path $dest 'driver-installer-helper.exe') -Algorithm SHA256).Hash
+    Write-Host "Installed to $dest (Start menu: Driver Installer)."
+    Write-Host "Helper SHA-256 $hash (compare with BUILD-INFO.txt)."
+    Write-Host 'The executables are not code-signed, so UAC shows "Unknown publisher".'
+    return
+}
+
+# ---- Source checkout: build the helper with PyInstaller.
 
 if (-not (Test-Path -LiteralPath $entry)) { throw "Run this from a driver-installer checkout ($entry not found)." }
 

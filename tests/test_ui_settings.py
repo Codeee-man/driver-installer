@@ -8,7 +8,7 @@ from ui import settings
 
 
 def test_user_file_location(linux):
-    assert str(settings.user_file()).endswith("config/driver-installer/ui.json")
+    assert settings.user_file().parts[-3:] == ("config", "driver-installer", "ui.json")
 
 
 def test_windows_user_file_is_under_appdata(windows, tmp_path):

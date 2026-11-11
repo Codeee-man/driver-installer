@@ -58,6 +58,7 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))     # UI preferences never touch the real home
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     monkeypatch.setattr(installer, "HELPER_LINUX", str(tmp_path / "no-helper-installed"))
+    monkeypatch.setattr(installer, "HELPER_LINUX_PACKAGED", str(tmp_path / "no-packaged-helper"))
     monkeypatch.setattr(engine, "AUTO_DISCOVER", False)          # no test talks to the internet by accident
     monkeypatch.setattr(loldrivers, "fetch", lambda *a, **k: canned_blocklist())
     common.init_audit(tmp_path / "audit.jsonl")

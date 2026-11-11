@@ -33,7 +33,8 @@ def dl(base, name, sha, size, q, **kw):
 def test_download_accepts_matching_hash_and_stores_read_only(server, tmp_path):
     path = dl(server, "good.cab", SHA, len(PAYLOAD), tmp_path / "q")
     assert path.read_bytes() == PAYLOAD and path.name.startswith(SHA[:16])
-    assert not os.stat(path).st_mode & 0o333           # no write or execute bits
+    if os.name != "nt":                                 # Windows has no mode bits; the folder is per-user
+        assert not os.stat(path).st_mode & 0o333       # no write or execute bits
 
 
 @pytest.mark.parametrize("name,sha,delta,message", [
@@ -133,8 +134,8 @@ def test_catalog_check_requires_a_catalog_and_checks_each(runner, windows, tmp_p
 @pytest.fixture(scope="module")
 def gpg(tmp_path_factory):
     """A real throwaway OpenPGP key, exported to binary and armored keyrings."""
-    if not (shutil.which("gpg") and shutil.which("gpgv")):
-        pytest.skip("gpg/gpgv not installed")
+    if os.name == "nt" or not (shutil.which("gpg") and shutil.which("gpgv")):
+        pytest.skip("GPG verification is the Linux path; needs gpg and gpgv")
     home = tmp_path_factory.mktemp("gnupg")
     os.chmod(home, 0o700)
     env = {**os.environ, "GNUPGHOME": str(home)}
@@ -171,6 +172,7 @@ def test_gpg_rejects_tampered_file_wrong_pin_and_unknown_key(gpg, tmp_path):
         verifier.verify_gpg(gpg["pkg"], gpg["sig"], gpg["fpr"], keyrings=[])
 
 
+@pytest.mark.skipif(os.name == "nt", reason="GPG keyrings are a Linux feature; POSIX ownership")
 def test_keyring_discovery_ignores_files_others_can_write(tmp_path):
     good, bad = tmp_path / "good.gpg", tmp_path / "bad.gpg"
     good.write_bytes(b"k")

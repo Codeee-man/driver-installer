@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Driver Installer
+GenericName=Driver and firmware updater
+Comment=Find, verify and install driver and firmware updates
+Exec=driver-installer gui
+Icon=driver-installer
+Terminal=false
+Categories=System;Settings;HardwareSettings;
+Keywords=driver;firmware;update;fwupd;

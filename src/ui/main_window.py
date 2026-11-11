@@ -56,6 +56,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.ctx, self.workdir = ctx, Path(workdir)
         self.worker: Worker | None = None
+        self._jobs = 0                            # background jobs started and not yet handled
         self.popover: ChecksPopover | None = None
         self.overrides = (False, False)          # (no restore point, no LOLDrivers list) agreed by the user
         self.ask = functools.partial(dialogs.ask, self)
@@ -198,16 +199,27 @@ class MainWindow(QMainWindow):
 
     @property
     def busy(self) -> bool:
-        return bool(self.worker and self.worker.isRunning())
+        """True from the start of a background job until its result has been handled, so the
+        window never looks idle in the gap between a thread ending and its result arriving."""
+        return self._jobs > 0
 
     def run_in_background(self, fn, on_done, on_progress=None) -> None:
+        self._jobs += 1
         self.worker = Worker(fn, self)
         if on_progress:
             self.worker.progress.connect(on_progress)
-        self.worker.done.connect(on_done)
-        self.worker.finished.connect(self.update_controls)
+        self.worker.done.connect(lambda result: self._job_done(on_done, result))
         self.worker.start()
         self.update_controls()
+
+    def _job_done(self, on_done, result) -> None:
+        # Runs on the GUI thread: nothing else can observe the window between these two lines,
+        # and a retry started by on_done counts itself before control returns to the event loop.
+        self._jobs -= 1
+        try:
+            on_done(result)
+        finally:
+            self.update_controls()
 
     def update_controls(self) -> None:
         counts = self.model.counts()
@@ -392,10 +404,7 @@ def settle(app, win, timeout: float = 60.0) -> None:
     while time.monotonic() < deadline:
         app.processEvents()
         if not win.busy:
-            app.processEvents()
-            app.processEvents()
-            if not win.busy:
-                return
+            return
         time.sleep(0.005)
     raise TimeoutError("background work did not finish")
 
