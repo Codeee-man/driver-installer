@@ -21,7 +21,7 @@ import threading
 from pathlib import Path
 
 APP = "SafeDriver"
-VERSION = "0.2.0"
+VERSION = "1.0.0"
 OS_NAME = "windows" if os.name == "nt" else "linux" if sys.platform.startswith("linux") else sys.platform
 ARCH = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "aarch64", "aarch64": "aarch64",
         "i386": "x86", "i686": "x86", "x86": "x86"}.get(platform.machine().lower(), platform.machine().lower())
