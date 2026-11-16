@@ -1,14 +1,13 @@
 # Release builds: Windows zip, Debian package and AppImage.
 #
-# Push a tag like v1.2.0 to build, test and attach everything to a DRAFT release
-# (publish it by hand after checking). "Run workflow" (workflow_dispatch) builds and
+# Push a tag like v1.2.0 to build, test and PUBLISH a release whose notes link
+# directly to every file. "Run workflow" (workflow_dispatch) builds and
 # tests the same way and keeps the files as workflow artifacts, without a release.
 name: build
 
 on:
   push:
     tags: ["v*"]
-    branches: ["ci/build-test"]   # TEMPORARY: scratch-branch test run
   workflow_dispatch:
 
 permissions:
@@ -122,11 +121,53 @@ jobs:
         with:
           path: release
           merge-multiple: true
-      - name: Checksums
-        working-directory: release
-        run: sha256sum * | tee SHA256SUMS
+      - name: Check assets, write checksums and release notes
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          VERSION="${TAG#v}"
+          WIN="driver-installer-windows.zip"
+          DEB="driver-installer_${VERSION}_all.deb"
+          APPIMAGE="driver-installer-${VERSION}-x86_64.AppImage"
+          cd release
+          # The links below are built from these names, so the uploads must match them exactly.
+          for f in "$WIN" "$DEB" "$APPIMAGE"; do
+            test -f "$f" || { echo "::error::expected asset $f was not built"; ls -la; exit 1; }
+          done
+          extra=$(ls | grep -vxF -e "$WIN" -e "$DEB" -e "$APPIMAGE" || true)
+          test -z "$extra" || { echo "::error::unexpected files: $extra"; exit 1; }
+          sha256sum "$WIN" "$DEB" "$APPIMAGE" | tee SHA256SUMS
+          URL="https://github.com/${REPO}/releases/download/${TAG}"
+          sum() { sha256sum "$1" | cut -d' ' -f1; }
+          size() { du -h "$1" | cut -f1; }
+          {
+            echo "## Downloads"
+            echo
+            echo "| Platform | File | Size | SHA-256 |"
+            echo "|---|---|---|---|"
+            echo "| **Windows (x64)** | [$WIN]($URL/$WIN) | $(size "$WIN") | \`$(sum "$WIN")\` |"
+            echo "| **Linux (Debian/Ubuntu)** | [$DEB]($URL/$DEB) | $(size "$DEB") | \`$(sum "$DEB")\` |"
+            echo "| **Linux (portable)** | [$APPIMAGE]($URL/$APPIMAGE) | $(size "$APPIMAGE") | \`$(sum "$APPIMAGE")\` |"
+            echo "| **Checksums** | [SHA256SUMS]($URL/SHA256SUMS) | | |"
+            echo
+            echo "- **Windows:** unzip, then run \`install_helper.ps1\` from PowerShell **as Administrator** to install into Program Files."
+            echo "- **Debian/Ubuntu:** \`sudo apt install ./$DEB\`"
+            echo "- **AppImage:** \`chmod +x $APPIMAGE && ./$APPIMAGE\` (needs FUSE, or set \`APPIMAGE_EXTRACT_AND_RUN=1\`)."
+            echo "- Verify downloads with \`sha256sum -c SHA256SUMS\`. The executables are not code-signed."
+            echo
+          } > ../notes.md
+          cat ../notes.md
       - uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          # Published immediately, so the /releases/download/ links work as soon as the job ends.
+          draft: false
+          body_path: notes.md
           generate_release_notes: true
-          files: release/*
+          fail_on_unmatched_files: true
+          files: |
+            release/driver-installer-windows.zip
+            release/driver-installer_*_all.deb
+            release/driver-installer-*-x86_64.AppImage
+            release/SHA256SUMS
