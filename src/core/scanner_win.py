@@ -124,7 +124,9 @@ def build_devices(entities: list[dict], signed: list[dict], services: list[dict]
         if not version and not problem:
             continue  # software/virtual node with no driver package: nothing to update
         ids: list[str] = []
-        raws = [str(pnp_id), *_as_list(ent.get("HardwareID")), *_as_list(drv.get("HardWareID"))]
+        # Compatible IDs too: Windows (and Windows Update) also match drivers on them.
+        raws = [str(pnp_id), *_as_list(ent.get("HardwareID")), *_as_list(drv.get("HardWareID")),
+                *_as_list(ent.get("CompatibleID"))]
         for raw in raws:
             for hid in normalise_windows_id(raw):
                 if hid not in ids:

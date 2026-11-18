@@ -89,21 +89,39 @@ py src\cli.py verify-log
 GUI: `py src\cli.py gui --manifest m.json` and repeat the install and the
 decline cases. The helper's own log is `C:\ProgramData\SafeDriver\audit.jsonl`.
 
-## 4b. Discovery and the LOLDrivers check (never run against the live sites yet)
+## 4b. Discovery, and finding out why it found nothing
+
+Discovery was verified live on a Windows runner (catalog search, details, download, digest,
+LOLDrivers, Microsoft signature). On a real PC, run:
 
 ```powershell
-py src\cli.py scan                      # no --manifest: searches the Microsoft Update Catalog per device
-py src\cli.py update --all              # dry run: downloads the .cab files and checks them
-py src\cli.py verify-log
+.\driver-installer.exe check --debug       # every step, to the console
 ```
-| Check | Expected |
+or open the window and press LOG. The trace shows, in order:
+
+| Line | What it tells you |
 |---|---|
-| `scan` | Rows marked `UPDATE` with source "Microsoft Update Catalog"; compare one against the catalog website |
-| No results at all | Run with a known-outdated device; if still empty, the page layout may have changed: send the audit log |
-| Download | From `*.download.windowsupdate.com` over https; "catalog digest OK" in the status |
-| Install | Catalog (.cat) accepted as signed by "Microsoft Windows Hardware Compatibility Publisher" |
-| Disconnect the network before `--apply` | "LOLDrivers blocklist could not be loaded", prompt, nothing installed on `n` (exit 7) |
-| Known-vulnerable driver | Put a driver listed on loldrivers.io into a test zip (section 3): `SECURITY ALERT`, exit 6, file deleted |
+| `scan.windows.done` | WMI devices found. 0 here means the WMI query failed (see the line before it) |
+| `wua.done` | What Windows Update offers this PC, and why each offer was not used. A `note: policy ...` line means your update policy hides drivers (WSUS, `ExcludeWUDriversInQualityUpdate`) |
+| `catalog.start` | How many devices have a PCI/USB hardware ID to search for |
+| `catalog.device` | Per device: each hardware ID searched (full, then base), how many results, and the reason each was skipped: older than installed, wrong Windows release, wrong architecture, hardware ID not supported |
+| `discovery.windows` | How many updates each source found |
+
+"Not newer than the installed driver" for every device is a normal result on a PC that
+Windows Update keeps current. Send the `--debug` output if the reasons look wrong.
+
+## 4c. "Windows cannot access the specified device, path, or file"
+
+Run, from the unzipped folder (normal user first, then as Administrator):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\diagnose_windows.ps1
+```
+It checks, without changing anything: starting from inside the .zip, missing files,
+Defender detections, Smart App Control, the download mark (Zone.Identifier), folder
+permissions, AppLocker/App Control, and whether `driver-installer.exe` starts. Installing with
+`install_helper.ps1` (as Administrator) removes the download mark and sets Users to Read &
+Execute; the build workflow checks that a standard user can then start both programs.
 
 ## 5. A real upgrade
 

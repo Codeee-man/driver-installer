@@ -32,7 +32,7 @@ from pathlib import Path
 from . import common, elevation, installer, manifest, restore, trust, verifier
 from .common import ElevationError, InstallError, VerificationError
 from .discovery import linux_lvfs, ms_catalog
-from .model import CHECK_ORDER, CHECK_SHORT, FAILED, NOT_APPLICABLE, PASSED, SKIPPED, Device, Update
+from .model import CHECK_ORDER, CHECK_SHORT, FAILED, NOT_APPLICABLE, PASSED, SKIPPED, Device, Update, compare_versions
 from .security import loldrivers
 
 MAX_PLAN_ITEMS = 64
@@ -86,11 +86,7 @@ def discover(devices: list[Device], ctx: Context, progress=None) -> list[Update]
     updates: list[Update] = []
     try:
         if common.OS_NAME == "windows":
-            from . import scanner_win
-            for dev, pkg in scanner_win.discover_updates(devices, progress=progress):
-                detail = "" if pkg.get("id_confirmed") else "matched by catalog search only"
-                updates.append(Update(dev, pkg["name"], dev.driver_version or "unknown", pkg["version"],
-                                      "Microsoft Update Catalog", "", pkg, "pending", detail))
+            updates += _discover_windows(devices, ctx, progress)
         elif common.OS_NAME == "linux":
             recs = linux_lvfs.driver_recommendations(devices)
             for dev, rec in linux_lvfs.match_devices(recs, devices):
@@ -101,6 +97,51 @@ def discover(devices: list[Device], ctx: Context, progress=None) -> list[Update]
         ctx.notes.append(f"online discovery failed: {exc}")
         common.audit("discovery.failed", error=str(exc))
     common.audit("discovery.done", updates=len(updates))
+    return updates
+
+
+WINDOWS_SOURCES = {"windows-update": "Windows Update", "ms-catalog": "Microsoft Update Catalog"}
+CATALOG_ORIGINS = tuple(WINDOWS_SOURCES)
+
+
+def _discover_windows(devices: list[Device], ctx: Context, progress=None) -> list[Update]:
+    """Windows Update (what Windows itself offers this PC) plus the Microsoft Update Catalog
+    (searched by hardware ID). One failing does not stop the other; per device the newer
+    driver wins, Windows Update on a tie."""
+    from . import scanner_win
+    from .discovery import windows_update
+    best: dict[int, tuple[Device, dict]] = {}
+
+    def offer(dev: Device, pkg: dict) -> None:
+        current = best.get(id(dev))
+        if current is None or compare_versions(pkg["version"], current[1]["version"]) > 0:
+            best[id(dev)] = (dev, pkg)
+
+    wua_count = cat_count = 0
+    try:
+        found, notes = windows_update.discover(devices)
+        wua_count = len(found)
+        for dev, pkg in found:
+            offer(dev, pkg)
+        if not found:
+            ctx.notes.extend(notes)
+    except windows_update.WindowsUpdateError as exc:
+        ctx.notes.append(f"Windows Update search failed: {exc}")
+        common.audit("wua.failed", error=str(exc))
+    try:
+        found = scanner_win.discover_updates(devices, progress=progress)
+        cat_count = len(found)
+        for dev, pkg in found:
+            offer(dev, pkg)
+    except ms_catalog.CatalogError as exc:
+        ctx.notes.append(f"Microsoft Update Catalog search failed: {exc}")
+        common.audit("catalog.failed", error=str(exc))
+    common.audit("discovery.windows", windows_update=wua_count, catalog=cat_count, chosen=len(best))
+    updates = []
+    for dev, pkg in best.values():
+        detail = "" if pkg.get("id_confirmed") else "matched by catalog search only"
+        updates.append(Update(dev, pkg["name"], dev.driver_version or "unknown", pkg["version"],
+                              WINDOWS_SOURCES[pkg["origin"]], "", pkg, "pending", detail))
     return updates
 
 
@@ -261,9 +302,17 @@ def _download_manifest_package(update: Update, ctx: Context, progress=None) -> P
 
 def _download_catalog_package(update: Update, ctx: Context, progress=None) -> Path:
     pkg, art = update.package, update.package["artifact"]
-    update.set_check("manifest", NOT_APPLICABLE, "found in the Microsoft Update Catalog, not in a signed manifest; "
+    where = "offered by Windows Update for this PC" if pkg.get("origin") == "windows-update" \
+        else "found in the Microsoft Update Catalog"
+    update.set_check("manifest", NOT_APPLICABLE, f"{where}, not in a signed manifest; "
                                                  "Microsoft's driver signature is required instead")
-    info = ms_catalog.resolve_download(pkg)
+    try:
+        info = ms_catalog.resolve_download(pkg)         # same update IDs; also gives the file's digest
+    except ms_catalog.CatalogError as exc:
+        if not (pkg.get("origin") == "windows-update" and art.get("url")):
+            raise
+        common.audit("wua.download_fallback", update=pkg["update_id"], reason=str(exc))
+        info = ms_catalog.CatalogFile(ms_catalog.normalise_download_url(art["url"]))
     try:
         path, digest, size = verifier.download_from_host(
             info.url, ctx.quarantine, art["filename"], host_ok=ms_catalog.is_download_host,
@@ -299,7 +348,7 @@ def verify_update(update: Update, ctx: Context, progress=None) -> None:
     for key in CHECK_ORDER:
         update.set_check(key, SKIPPED, _NOT_YET)
     try:
-        if pkg.get("origin") == "ms-catalog":
+        if pkg.get("origin") in CATALOG_ORIGINS:
             path = _download_catalog_package(update, ctx, progress)
         else:
             path = _download_manifest_package(update, ctx, progress)
@@ -447,7 +496,9 @@ def _policy_catalog_package(desc) -> dict:
     sha256, size = str(art.get("sha256", "")), art.get("size")
     if not manifest.SHA256_RE.match(sha256) or not isinstance(size, int) or not 0 < size <= ms_catalog.MAX_DRIVER_BYTES:
         raise VerificationError("discovered package was not downloaded and hashed")
-    return {"id": f"mscatalog.{update_id}", "origin": "ms-catalog", "name": str(desc.get("name") or update_id)[:200],
+    origin = "windows-update" if desc.get("origin") == "windows-update" else "ms-catalog"
+    prefix = "windowsupdate" if origin == "windows-update" else "mscatalog"
+    return {"id": f"{prefix}.{update_id}", "origin": origin, "name": str(desc.get("name") or update_id)[:200],
             "version": str(desc.get("version") or "0")[:64],
             "artifact": {"filename": f"{update_id}.cab", "size": size, "sha256": sha256, "format": "cab",
                          "signature": {"type": "authenticode", "target": "catalog", "subject": trust.MS_WHQL_SUBJECT}},
@@ -479,7 +530,7 @@ def _resolve(item, man) -> tuple[str, str, dict | None]:
     if "discovered" in item:
         desc = item["discovered"]
         origin = desc.get("origin") if isinstance(desc, dict) else None
-        if origin == "ms-catalog":
+        if origin in CATALOG_ORIGINS:
             pkg = _policy_catalog_package(desc)
         elif origin == "linux-repo":
             pkg = _policy_repo_package(desc)

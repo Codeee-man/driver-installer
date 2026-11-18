@@ -18,6 +18,9 @@ The helper enforces 3 and 4 itself and ignores whatever policy the front end cla
 
 The page layout is Microsoft's and can change without notice; a layout change makes
 discovery return nothing (CatalogError), it cannot make it install something unverified.
+Verified against the live catalog from a Windows runner on 2026-11-18: search table, details
+page (architecture, supported hardware IDs), download dialog (URL, SHA-1 and SHA-256), and a
+full download -> digest -> LOLDrivers -> Microsoft-signature check for four real NIC/Wi-Fi IDs.
 Each search sends one hardware ID of this machine to Microsoft and is written to the audit log.
 """
 from __future__ import annotations
@@ -294,14 +297,35 @@ def _device_windows_ids(device: Device) -> set[str]:
     return {h[4:].upper() for h in device.hardware_ids if h.startswith("raw:")} | set(query_ids(device))
 
 
+# Minimum build for the release names the catalog uses in its "Products" column.
+_WIN10_RELEASES = {"1507": 10240, "1511": 10586, "1607": 14393, "1703": 15063, "1709": 16299, "1803": 17134,
+                   "1809": 17763, "1903": 18362, "1909": 18363, "2004": 19041, "20h2": 19042, "21h1": 19043,
+                   "21h2": 19044, "22h2": 19045, "vibranium": 19041}
+_WIN11_RELEASES = {"21h2": 22000, "copper": 22000, "22h2": 22621, "nickel": 22621, "23h2": 22631,
+                   "24h2": 26100, "germanium": 26100, "25h2": 26200, "26h1": 28000}
+_RELEASE = re.compile(r"\b(\d{4}|\d{2}h\d|vibranium|copper|nickel|germanium)\b", re.I)
+
+
 def _os_ok(products: str, build: int | None) -> bool:
-    text = products.lower()
-    ten, eleven = "windows 10" in text, "windows 11" in text
-    if not (ten or eleven):
-        return False                       # Windows 7/8.1/Server-only driver
-    if build is not None and eleven and not ten and build < 22000:
-        return False                       # Windows 11-only driver on Windows 10
-    return True
+    """True if any product in the catalog's "Products" text covers this Windows build.
+
+    "Windows 11 Client, version 25H2 and later" needs build 26200, so it is not offered to a
+    24H2 (26100) PC, whose INF would not match. "Windows 10 ... and later" also covers Windows 11.
+    Products that name no Windows 10/11 release (7, 8.1, Server-only) never match."""
+    for chunk in re.split(r"(?i)(?=\bwindows )", products or ""):
+        head = re.match(r"(?i)windows (10|11)\b", chunk)
+        if not head:
+            continue                                   # Windows 7, 8.1, Server ... products
+        if build is None:
+            return True
+        family = head.group(1)
+        if family == "11" and build < 22000:
+            continue                                   # Windows 11 driver on Windows 10
+        release = _RELEASE.search(chunk[head.end():])
+        table = _WIN11_RELEASES if family == "11" else _WIN10_RELEASES
+        if build >= (table.get(release.group(1).lower(), 0) if release else 0):
+            return True
+    return False
 
 
 def _windows_build() -> int | None:
@@ -309,23 +333,73 @@ def _windows_build() -> int | None:
     return getter().build if getter else None
 
 
+# Details pages fetched per device: the whole first page of results. Each driver version is
+# usually listed once per Windows release (often 10-15 times), so a small cap misses older
+# versions that do support this device (found live: Realtek USB REV_3100 at positions 19-24).
+# Details are only fetched when newer versions exist, so up-to-date devices cost one search.
+MAX_DETAILS = 25
+
+
+def _reject_reason(entry: CatalogEntry, device: Device, os_build: int | None) -> str:
+    """Why a search result cannot be this device's update, or "" if it might be."""
+    if not entry.classification.lower().startswith("driver"):
+        return f"not a driver ({entry.classification or 'no classification'})"
+    if not parse_version(entry.version):
+        return "no usable version"
+    if not _os_ok(entry.products, os_build):
+        return "not for this Windows version"
+    if not is_newer(entry.version, device.driver_version):
+        return "not newer than the installed driver"
+    return ""
+
+
 def best_update(device: Device, client: CatalogClient, *, arch: str | None = None,
                 os_build: int | None = None) -> dict | None:
-    """The newest matching catalog driver for one device as a package dict, or None."""
+    """The newest matching catalog driver for one device as a package dict, or None.
+
+    Hardware IDs are tried from most to least specific (PCI\\VEN&DEV&SUBSYS, then PCI\\VEN&DEV;
+    USB\\VID&PID): the next, broader query runs only when the previous one produced no usable
+    driver. Every step is written to the audit log as catalog.device with the number of results
+    and the reason each one was set aside, so a run that finds nothing can be explained."""
     arch = arch or common.ARCH
     mine = _device_windows_ids(device)
-    for query in query_ids(device):
-        candidates = [e for e in client.search(query)
-                      if e.classification.lower().startswith("driver") and parse_version(e.version)
-                      and _os_ok(e.products, os_build) and is_newer(e.version, device.driver_version)]
+    queries = query_ids(device)
+    steps = []
+    for level, query in enumerate(queries):
+        entries = client.search(query)
+        step = {"query": query, "level": "full" if level == 0 and len(queries) > 1 else "base",
+                "results": len(entries), "skipped": {}}
+        steps.append(step)
+
+        def skip(reason):
+            step["skipped"][reason] = step["skipped"].get(reason, 0) + 1
+        candidates, seen = [], set()
+        for e in entries:
+            reason = _reject_reason(e, device, os_build)
+            if reason:
+                skip(reason)
+            elif e.update_id not in seen:
+                seen.add(e.update_id)
+                candidates.append(e)
         candidates.sort(key=lambda e: (parse_version(e.version), e.last_updated), reverse=True)
-        for entry in candidates[:3]:
+        step["candidates"] = len(candidates)
+        for n, entry in enumerate(candidates):
+            if n >= MAX_DETAILS:
+                skip(f"not examined (only the {MAX_DETAILS} newest are checked)")
+                continue
             info = client.details(entry.update_id)
             if info.architectures and arch not in info.architectures:
+                skip(f"built for {'/'.join(info.architectures)}, not {arch}")
                 continue
             if info.hardware_ids and not mine & set(info.hardware_ids):
-                continue                   # the search matched on text, not on this device's ID
+                skip("this device's hardware IDs are not in the driver's supported list")
+                continue
+            step["chosen"] = {"update_id": entry.update_id, "version": entry.version, "title": entry.title}
+            common.audit("catalog.device", device=device.name, installed=device.driver_version, steps=steps,
+                         outcome=f"update {entry.version}")
             return to_package(entry, info, device, query, arch)
+    outcome = "no PCI/USB hardware ID to search for" if not queries else "no newer driver that fits"
+    common.audit("catalog.device", device=device.name, installed=device.driver_version, steps=steps, outcome=outcome)
     return None
 
 
@@ -360,6 +434,10 @@ def discover(devices: list[Device], client: CatalogClient | None = None, *, limi
     client = client or CatalogClient()
     os_build = os_build if os_build is not None else _windows_build()
     found, seen, searched = [], {}, 0
+    searchable = [d for d in devices if query_ids(d)]
+    common.audit("catalog.start", devices=len(devices), searchable=len(searchable), os_build=os_build,
+                 arch=arch or common.ARCH,
+                 not_searchable=len(devices) - len(searchable))      # ACPI, ROOT, SWD, VMBUS... have no catalog ID
     for device in devices:
         queries = query_ids(device)
         if not queries:

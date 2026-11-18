@@ -40,8 +40,13 @@ helper_a = analysis("helper_main.py", collect_submodules("core"), ["PySide6", "s
 
 
 def exe(a, name, console):
+    # exclude_binaries=True + COLLECT below = one-folder build: nothing is unpacked to %TEMP% at
+    # start-up (the one-file mode that antivirus heuristics dislike is not used).
+    # uac_admin=False keeps requestedExecutionLevel="asInvoker": every program starts with the
+    # user's own rights; only the helper is elevated, on demand, through UAC.
     return EXE(PYZ(a.pure), a.scripts, [], exclude_binaries=True, name=name, console=console,
-               icon=ICON, version=VERSION_FILE, upx=False, disable_windowed_traceback=False)
+               icon=ICON, version=VERSION_FILE, upx=False, disable_windowed_traceback=False,
+               uac_admin=False, uac_uiaccess=False)
 
 
 cli_exe = exe(cli_a, "driver-installer", True)

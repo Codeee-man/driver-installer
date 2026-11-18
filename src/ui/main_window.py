@@ -9,7 +9,6 @@ The window never runs elevated. Closing it leaves no thread or process behind.
 from __future__ import annotations
 
 import functools
-import json
 import time
 from pathlib import Path
 
@@ -185,7 +184,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ helpers
     def _log_record(self, rec: dict) -> None:
-        line = f"{rec['ts'][11:19]}  {rec['event']:<22} {json.dumps(rec['data'], default=str)[:180]}"
+        from core import diagnostics
+        line = diagnostics.format_record(rec)                 # step-by-step discovery counts and skip reasons
         # audit events can come from worker threads; hand the text to the GUI thread
         from PySide6.QtCore import QMetaObject, Q_ARG
         QMetaObject.invokeMethod(self.log, "appendPlainText", Qt.QueuedConnection, Q_ARG(str, line))
@@ -257,7 +257,7 @@ class MainWindow(QMainWindow):
                 import demo
                 self.ctx = demo.build(devices, self.workdir)
             if engine.discovery_enabled(self.ctx):
-                report(("status", "Looking for updates (Microsoft Update Catalog)…" if common.OS_NAME == "windows"
+                report(("status", "Looking for updates (Windows Update, Microsoft Update Catalog)…" if common.OS_NAME == "windows"
                         else "Looking for updates (fwupd, distribution driver tools)…"))
             updates = engine.find_all_updates(devices, upgrades, self.ctx)
             report(("loaded", devices, updates))

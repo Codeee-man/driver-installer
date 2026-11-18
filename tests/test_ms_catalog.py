@@ -132,7 +132,7 @@ def test_discover_raises_when_the_catalog_is_down_and_engine_turns_that_into_a_n
         ms_catalog.discover(devices)
     ctx = engine.Context(discover=True)
     assert engine.find_all_updates(devices, {}, ctx) == []
-    assert "online discovery failed" in ctx.notes[0]
+    assert any("Microsoft Update Catalog search failed" in n for n in ctx.notes)
 
 
 # ------------------------------------------------------------ full pipeline
@@ -268,7 +268,7 @@ def test_cli_check_and_scan_use_discovery_without_a_manifest(win_box, as_user, c
     assert {u["source"] for u in report["updates"]} == {"Microsoft Update Catalog"}
     win_box[0].fail = True
     assert cli.main(["check"]) == 0                              # catalog down: reported, not fatal
-    assert "online discovery failed" in capsys.readouterr().err
+    assert "Microsoft Update Catalog search failed" in capsys.readouterr().err
 
 
 def test_manifest_takes_precedence_and_discovery_is_opt_in_next_to_it(win_box, as_user, pin, tmp_path, capsys):

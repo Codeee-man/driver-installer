@@ -53,9 +53,38 @@ if ($Uninstall) {
 }
 
 function Set-AdminOnlyAcl([string]$path) {
-    # Administrators + SYSTEM: full control. Users: read and execute only.
+    # Administrators + SYSTEM: full control. Users: read and execute only, so a normal
+    # (non-elevated) user can start driver-installer-gui.exe but cannot change any file.
     & icacls $path /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Could not set the ACL on $path." }
+}
+
+function Reset-ChildAcls([string]$path) {
+    # Every file and folder below $path inherits exactly the ACL above, nothing else.
+    & icacls (Join-Path $path '*') /reset /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not reset the ACLs below $path." }
+}
+
+function Remove-DownloadMark([string]$path) {
+    # Files unzipped from a download carry a Zone.Identifier stream ("mark of the web").
+    # Windows can then refuse to start them, or each DLL of the bundled runtime, from
+    # Program Files. Unblock-File removes that mark; it changes nothing else.
+    Get-ChildItem -LiteralPath $path -Recurse -File -Force | Unblock-File
+}
+
+function Assert-UsersCanRun([string]$exe) {
+    $acl = Get-Acl -LiteralPath $exe
+    $sid = { param($rule) try { $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { '' } }
+    $rules = @($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' })
+    $users = @($rules | Where-Object { (& $sid $_) -eq 'S-1-5-32-545' -and ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::ReadAndExecute) -eq [Security.AccessControl.FileSystemRights]::ReadAndExecute })
+    $admins = @($rules | Where-Object { (& $sid $_) -eq 'S-1-5-32-544' -and ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl })
+    # Only rights that change the file count; Modify/Write as a whole also contain read bits.
+    $writeBits = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteExtendedAttributes, WriteAttributes, Delete, ChangePermissions, TakeOwnership'
+    $writers = @($rules | Where-Object { (& $sid $_) -notin 'S-1-5-32-544', 'S-1-5-18' -and ($_.FileSystemRights -band $writeBits) })
+    if (-not $users) { throw "BUILTIN\Users cannot read and execute $exe." }
+    if (-not $admins) { throw "BUILTIN\Administrators do not have full control of $exe." }
+    if ($writers) { throw "Someone other than Administrators/SYSTEM can modify ${exe}: $($writers.IdentityReference -join ', ')" }
+    if (Get-Item -LiteralPath $exe -Stream Zone.Identifier -ErrorAction SilentlyContinue) { throw "$exe still carries a download mark." }
 }
 
 # ---- Release folder: install the prebuilt program as it is.
@@ -66,9 +95,14 @@ if (Test-Path -LiteralPath $prebuilt) {
     if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
     New-Item -ItemType Directory -Path $dest | Out-Null
     Set-AdminOnlyAcl $dest
+    Remove-DownloadMark $PSScriptRoot
     Copy-Item -Path (Join-Path $PSScriptRoot '*') -Destination $dest -Recurse -Force
+    Remove-DownloadMark $dest
+    Reset-ChildAcls $dest
     foreach ($exe in 'driver-installer.exe', 'driver-installer-gui.exe', 'driver-installer-helper.exe') {
-        if (-not (Test-Path -LiteralPath (Join-Path $dest $exe))) { throw "$exe is missing from the release folder." }
+        $path = Join-Path $dest $exe
+        if (-not (Test-Path -LiteralPath $path)) { throw "$exe is missing from the release folder." }
+        Assert-UsersCanRun $path
     }
     $shell = New-Object -ComObject WScript.Shell
     $link = $shell.CreateShortcut($shortcut)
@@ -119,6 +153,8 @@ try {
     & icacls $dest /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Could not set the ACL on $dest." }
     Copy-Item -Path (Join-Path $build 'dist\helper\*') -Destination $dest -Recurse -Force
+    Remove-DownloadMark $dest
+    Reset-ChildAcls $dest
 }
 finally {
     Remove-Item -LiteralPath $build -Recurse -Force -ErrorAction SilentlyContinue
@@ -126,6 +162,7 @@ finally {
 
 $helper = Join-Path $dest 'helper.exe'
 if (-not (Test-Path -LiteralPath $helper)) { throw "Build finished but $helper is missing." }
+Assert-UsersCanRun $helper
 $hash = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash
 Write-Host "Installed $helper"
 Write-Host "SHA-256   $hash"

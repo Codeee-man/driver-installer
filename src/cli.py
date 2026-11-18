@@ -57,6 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     shared.add_argument("--sig", help="detached manifest signature (default: <manifest>.sig)")
     shared.add_argument("--json", action="store_true", help="machine-readable output")
     shared.add_argument("--log", type=Path, help="audit log path")
+    shared.add_argument("--debug", action="store_true",
+                        help="print every discovery step to stderr: devices scanned, queries, results and why each was skipped")
     shared.add_argument("--wmi-fixture", type=Path, help="use saved WMI JSON instead of scanning this machine")
     online = shared.add_mutually_exclusive_group()
     online.add_argument("--discover", action="store_true", default=None,
@@ -143,7 +145,7 @@ def update_id(u) -> str:
 def find_updates(args, ctx, devices, upgrades):
     """Manifest + fwupd + (when enabled) online discovery. Discovery problems are reported, not fatal."""
     if engine.discovery_enabled(ctx) and not args.json and not getattr(args, "quiet", False):
-        print("Looking for updates (Microsoft Update Catalog)..." if common.OS_NAME == "windows"
+        print("Looking for updates (Windows Update, Microsoft Update Catalog)..." if common.OS_NAME == "windows"
               else "Looking for updates (fwupd, distro driver tools)...", file=sys.stderr)
     updates = engine.find_all_updates(devices, upgrades, ctx)
     for note in ctx.notes:
@@ -346,6 +348,11 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK if ok else EXIT_FAILED
     reporting = args.command in ("scan", "check")       # their exit codes: 2 = refused, 3 = other error
     common.init_audit(args.log)
+    if getattr(args, "debug", False):
+        from core import diagnostics
+        common.audit_log().listeners.append(
+            lambda rec: print(diagnostics.format_record(rec), file=sys.stderr, flush=True)
+            if diagnostics.wants(rec["event"]) else None)
     common.audit("session.start", version=common.VERSION, command=args.command)
     try:
         if args.command == "scan":

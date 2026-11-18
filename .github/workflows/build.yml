@@ -20,7 +20,7 @@ concurrency:
 env:
   PYTHON_VERSION: "3.12"
   # Same pins as tools/build_linux.py APPIMAGE_REQUIREMENTS.
-  PIP_PACKAGES: "cryptography==50.0.2 PySide6==6.12.0 pytest jsonschema pyinstaller==6.22.3"
+  PIP_PACKAGES: "cryptography==50.0.2 PySide6==6.12.0 pytest jsonschema pyinstaller==6.22.3 pefile==2024.8.26"
   QT_QPA_PLATFORM: offscreen
 
 jobs:
@@ -36,12 +36,14 @@ jobs:
         run: python -m pip install ${{ env.PIP_PACKAGES }}
       - name: Test suite
         run: python -m pytest -q
-      - name: Check install_helper.ps1 parses
+      - name: Check the PowerShell scripts parse
         shell: pwsh
         run: |
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile("$PWD\tools\install_helper.ps1", [ref]$null, [ref]$errors) | Out-Null
-          if ($errors) { $errors | Format-List; exit 1 }
+          foreach ($script in 'install_helper.ps1', 'diagnose_windows.ps1') {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile("$PWD\tools\$script", [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors | Format-List; exit 1 }
+          }
       - name: Build driver-installer-windows.zip
         run: python tools/build_windows.py --out dist
       - name: Smoke test the unzipped build
@@ -56,6 +58,58 @@ jobs:
           if ($p.ExitCode -ne 64) { throw "helper exit code $($p.ExitCode), expected 64" }
           & "$app/driver-installer.exe" gui --demo --screenshot smoke.png
           if (-not (Test-Path smoke.png)) { throw "GUI did not render" }
+      - name: Install into Program Files and start as a standard user
+        shell: pwsh
+        run: |
+          $app = (Resolve-Path "smoke/driver-installer").Path
+          # Simulate a browser download: mark every file with the "mark of the web".
+          Get-ChildItem $app -Recurse -File | ForEach-Object { Set-Content -LiteralPath $_.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$app/install_helper.ps1"
+          if ($LASTEXITCODE -ne 0) { throw "install_helper.ps1 failed" }
+          $dest = Join-Path $env:ProgramFiles 'driver-installer'
+          $marked = @(Get-ChildItem $dest -Recurse -File | Where-Object { Get-Item -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue })
+          if ($marked.Count) { throw "$($marked.Count) installed file(s) still carry the download mark" }
+          icacls "$dest\driver-installer-gui.exe"
+          # A standard (non-administrator) account must be able to start the installed programs.
+          # Run as scheduled tasks under that account: Start-Process -Credential hangs in the
+          # runner's non-interactive session. Every wait has a deadline.
+          $pw = 'Di-' + [guid]::NewGuid().ToString('N').Substring(0, 16) + '!a1'
+          New-LocalUser -Name diuser -Password (ConvertTo-SecureString $pw -AsPlainText -Force) -AccountNeverExpires | Out-Null
+          Add-LocalGroupMember -Group (Get-LocalGroup -SID 'S-1-5-32-545').Name -Member diuser
+          $admins = (Get-LocalGroup -SID 'S-1-5-32-544').Name
+          if (Get-LocalGroupMember -Group $admins | Where-Object { $_.Name -like '*\diuser' }) { throw 'test user must not be an administrator' }
+          # Scheduled tasks need "Log on as a batch job", which a new account on Windows Server
+          # lacks. It is a logon right only: file access is still that of a standard user.
+          $sid = (Get-LocalUser diuser).SID.Value
+          secedit /export /cfg C:\secpol.cfg /areas USER_RIGHTS | Out-Null
+          $cfg = Get-Content C:\secpol.cfg
+          if ($cfg -match '^SeBatchLogonRight') { $cfg = $cfg -replace '^(SeBatchLogonRight\s*=\s*)', "`$1*$sid," }
+          else { $cfg = $cfg -replace '^\[Privilege Rights\]', "[Privilege Rights]`r`nSeBatchLogonRight = *$sid" }
+          $cfg | Set-Content C:\secpol.cfg
+          secedit /configure /db C:\Windows\security\local.sdb /cfg C:\secpol.cfg /areas USER_RIGHTS | Out-Null
+          function Invoke-AsUser([string]$name, [string]$command) {
+            $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/d /c $command"
+            Register-ScheduledTask -TaskName $name -Action $action -User diuser -Password $pw -RunLevel Limited -Force | Out-Null
+            Start-ScheduledTask -TaskName $name
+            $deadline = (Get-Date).AddMinutes(3)
+            # 267011 (0x41303) = has not run yet; 267009 (0x41301) = running
+            do { Start-Sleep 2; $rc = (Get-ScheduledTaskInfo -TaskName $name).LastTaskResult }
+            while (($rc -in 267011, 267009 -or (Get-ScheduledTask -TaskName $name).State -eq 'Running') -and (Get-Date) -lt $deadline)
+            if ($rc -in 267011, 267009) { Stop-ScheduledTask -TaskName $name; throw ("{0} did not run to completion within 3 minutes (0x{1:X8})" -f $name, $rc) }
+            Unregister-ScheduledTask -TaskName $name -Confirm:$false
+            return $rc
+          }
+          $out = 'C:\Users\Public\di-version.txt'
+          $rc = Invoke-AsUser 'di-cli' "`"$dest\driver-installer.exe`" --version > $out 2>&1"
+          "standard user CLI: exit $rc, output: $(Get-Content $out -ErrorAction SilentlyContinue)"
+          if ($rc -ne 0 -or -not ((Get-Content $out -ErrorAction SilentlyContinue) -match 'SafeDriver')) { throw "a standard user could not start driver-installer.exe" }
+          $shot = 'C:\Users\Public\gui-standard-user.png'
+          $rc = Invoke-AsUser 'di-gui' "set QT_QPA_PLATFORM=offscreen&& `"$dest\driver-installer-gui.exe`" --demo --screenshot $shot > C:\Users\Public\di-gui.txt 2>&1"
+          "standard user GUI: exit $rc"
+          if ($rc -ne 0 -or -not (Test-Path $shot)) { Get-Content C:\Users\Public\di-gui.txt -ErrorAction SilentlyContinue; throw "a standard user could not start driver-installer-gui.exe" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$dest\diagnose_windows.ps1"
+          Remove-LocalUser -Name diuser
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$app/install_helper.ps1" -Uninstall
       - uses: actions/upload-artifact@v4
         with:
           name: windows

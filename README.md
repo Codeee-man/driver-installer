@@ -16,9 +16,11 @@ python src/cli.py gui --demo                         # GUI with fake packages; n
 python src/cli.py gui --theme clean                  # "matrix" (default) or "clean"; the in-app toggle is remembered
 ```
 
-Without a manifest the tool discovers updates itself: Microsoft Update Catalog on Windows
-(hardware IDs are sent to Microsoft; `--no-discover` turns it off), fwupd/LVFS and the
-distro's driver tool on Linux. Every Windows driver package is checked against the
+Without a manifest the tool discovers updates itself: on Windows, Windows Update (the drivers
+Windows offers this PC) plus the Microsoft Update Catalog searched by hardware ID (hardware IDs
+are sent to Microsoft; `--no-discover` turns it off); on Linux, fwupd/LVFS and the distro's
+driver tool. `--debug` (or LOG in the window) shows every step: devices scanned, queries,
+results, and why each result was skipped. Every Windows driver package is checked against the
 LOLDrivers list of known vulnerable drivers before install.
 
 Releases: push a tag like `v1.0.0` and `.github/workflows/build.yml` tests on Windows and Linux,

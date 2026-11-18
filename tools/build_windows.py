@@ -40,6 +40,7 @@ ZIP_NAME = "driver-installer-windows.zip"
 PROGRAMS = ("driver-installer", "driver-installer-gui", "driver-installer-helper")
 EXTRA_FILES = {
     "install_helper.ps1": ROOT / "tools" / "install_helper.ps1",
+    "diagnose_windows.ps1": ROOT / "tools" / "diagnose_windows.ps1",
     "README.md": ROOT / "README.md",
     "LICENSE": ROOT / "LICENSE",
     "SIGNING.md": ROOT / "docs" / "SIGNING.md",
@@ -90,6 +91,33 @@ def icon_file(work: Path) -> Path | None:
     return None
 
 
+def check_pe_metadata(exe: Path, version: str) -> None:
+    """Windows only: the manifest asks for no elevation (asInvoker) and the version resource is set.
+    Uses `pefile` when installed (the build workflow installs it)."""
+    try:
+        import pefile
+    except ImportError:
+        print("note: pefile not installed; manifest and version resource not checked", file=sys.stderr)
+        return
+    pe = pefile.PE(str(exe))
+    manifests = []
+    resources = pe.DIRECTORY_ENTRY_RESOURCE.entries if hasattr(pe, "DIRECTORY_ENTRY_RESOURCE") else []
+    for entry in resources:
+        if entry.id == pefile.RESOURCE_TYPE["RT_MANIFEST"]:
+            for sub in entry.directory.entries:
+                for lang in sub.directory.entries:
+                    manifests.append(pe.get_data(lang.data.struct.OffsetToData, lang.data.struct.Size).decode("utf-8", "replace"))
+    if not any('level="asInvoker"' in m for m in manifests):
+        raise BuildError(f"{exe.name}: manifest does not request asInvoker")
+    strings = {}
+    for info in getattr(pe, "FileInfo", []) or []:
+        for item in info:
+            for table in getattr(item, "StringTable", []):
+                strings.update({k.decode(): v.decode() for k, v in table.entries.items()})
+    if strings.get("ProductVersion") != version or strings.get("ProductName") != "Driver Installer":
+        raise BuildError(f"{exe.name}: version resource is {strings!r}")
+
+
 def verify(app_dir: Path, version: str) -> dict[str, str]:
     suffix = ".exe" if platform.system() == "Windows" else ""
     hashes = {}
@@ -98,6 +126,8 @@ def verify(app_dir: Path, version: str) -> dict[str, str]:
         if not exe.is_file():
             raise BuildError(f"{exe.name} was not built")
         hashes[exe.name] = sha256_file(exe)
+        if platform.system() == "Windows":
+            check_pe_metadata(exe, version)
     fonts = list(app_dir.rglob(FONT.name))
     if not fonts or sha256_file(fonts[0]) != sha256_file(FONT):
         raise BuildError(f"{FONT.name} is missing from the bundle or differs from the source")

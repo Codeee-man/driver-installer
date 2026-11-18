@@ -14,6 +14,7 @@ import json
 import ntpath
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -174,13 +175,18 @@ class Result:
     stderr: str = ""
 
 
-def run(cmd: list[str], timeout: int = 600, env: dict | None = None, log_args: bool = True) -> Result | None:
-    """Run a system tool without a shell. None means the tool is missing or did not start."""
+def run(cmd: list[str], timeout: int = 600, env: dict | None = None, log_args: bool = True,
+        unset: tuple = ()) -> Result | None:
+    """Run a system tool without a shell. None means the tool is missing or did not start.
+    `unset` names environment variables the child must not inherit."""
     exe = cmd[0] if os.path.isabs(cmd[0]) else resolve_binary(cmd[0])
     if not exe:
         audit("exec.unavailable", program=cmd[0])
         return None
     full_env = {**os.environ, "LC_ALL": "C", **(env or {})}
+    for name in unset:
+        for key in [k for k in full_env if k.upper() == name.upper()]:   # Windows names are case-insensitive
+            del full_env[key]
     if OS_NAME != "windows":
         full_env["PATH"] = TRUSTED_PATH
     flags = 0x08000000 if OS_NAME == "windows" else 0  # CREATE_NO_WINDOW
@@ -196,7 +202,23 @@ def run(cmd: list[str], timeout: int = 600, env: dict | None = None, log_args: b
 
 
 def powershell(script: str, env: dict | None = None, timeout: int = 600) -> Result | None:
-    """Run a fixed Windows PowerShell script. Values go in through `env`, never by string building."""
+    """Run a fixed Windows PowerShell 5.1 script. Values go in through `env`, never by string building.
+
+    PSModulePath is not passed on: when this program is started from PowerShell 7 (or any
+    process that inherited its environment), that variable points Windows PowerShell 5.1 at
+    PowerShell 7's modules, and cmdlets such as Get-AuthenticodeSignature then fail to load.
+    Found on a real Windows runner; without it every catalog signature check failed."""
     encoded = base64.b64encode(script.encode("utf-16-le")).decode()
     return run(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-               timeout=timeout, env=env, log_args=False)
+               timeout=timeout, env=env, log_args=False, unset=("PSModulePath",))
+
+
+def clean_powershell_error(text: str) -> str:
+    """Readable message from PowerShell's stderr, which is CLIXML when output is redirected."""
+    text = text or ""
+    if "#< CLIXML" in text:
+        parts = re.findall(r'<S S="Error">(.*?)</S>', text, re.S)
+        text = "".join(parts) or text
+        text = re.sub(r"_x([0-9A-Fa-f]{4})_", lambda m: chr(int(m.group(1), 16)), text)
+        text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").replace("&quot;", '"')
+    return " ".join(text.split())[:300]

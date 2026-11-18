@@ -26,16 +26,18 @@ class FakeRunner:
         self.calls: list[tuple[str, list[str], dict]] = []
         self.available: set[str] = {"powershell", "pnputil", "expand", "icacls"}
         self.responses: dict[str, object] = {}
+        self.unset: list[tuple[str, tuple]] = []
 
     def on(self, program: str, response) -> None:
         """response: common.Result, or callable(cmd, env) -> common.Result | None"""
         self.responses[program] = response
 
-    def run(self, cmd, timeout=600, env=None, log_args=True):
+    def run(self, cmd, timeout=600, env=None, log_args=True, unset=()):
         prog = cmd[0]
         if prog not in self.available:
             return None
         self.calls.append((prog, list(cmd[1:]), dict(env or {})))
+        self.unset.append((prog, tuple(unset)))
         resp = self.responses.get(prog, common.Result(0))
         return resp(cmd, env or {}) if callable(resp) else resp
 
@@ -132,13 +134,19 @@ def authenticode_json(subject="CN=Intel Corporation, O=Intel Corporation, L=Sant
                        "Thumbprint": thumbprint, "SignatureType": "Authenticode", "TimeStamped": True})
 
 
-def windows_powershell(restore=RESTORE_CREATED, signer=None):
-    """PowerShell stand-in: answers the Authenticode and restore-point scripts by their env inputs."""
+WUA_EMPTY = json.dumps({"policy": None, "updates": [], "error": None, "resultCode": 2})
+
+
+def windows_powershell(restore=RESTORE_CREATED, signer=None, wua=WUA_EMPTY):
+    """PowerShell stand-in: answers the Authenticode, restore-point and Windows Update scripts
+    by their env inputs; anything else (WMI queries) gets an empty list."""
     def respond(cmd, env):
         if "SD_FILE" in env:
             return common.Result(0, signer or authenticode_json())
         if "SD_DESC" in env:
             return common.Result(0, restore)
+        if "SD_CRITERIA" in env:
+            return common.Result(0, wua() if callable(wua) else wua)
         return common.Result(0, "[]")
     return respond
 
