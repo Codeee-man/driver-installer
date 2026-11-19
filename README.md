@@ -25,9 +25,10 @@ LOLDrivers list of known vulnerable drivers before install.
 
 Releases: push a tag like `v1.0.0` and `.github/workflows/build.yml` tests on Windows and Linux,
 then attaches `driver-installer-windows.zip`, a `.deb` and an `.AppImage` (plus `SHA256SUMS`) to a
-draft release. Build locally with `python tools/build_linux.py all` or `py tools\build_windows.py`.
+published release. Build locally with `python tools/build_linux.py all` or `py tools\build_windows.py`.
 On Windows, unzip and run `install_helper.ps1` from an elevated PowerShell to install into
-Program Files. None of the builds is code-signed yet.
+Program Files. The Windows executables are Authenticode-signed when the repository has the
+`WINDOWS_PFX_BASE64`/`WINDOWS_PFX_PASSWORD` secrets (see `docs/SIGNING.md`); otherwise unsigned.
 
 Before real use:
 

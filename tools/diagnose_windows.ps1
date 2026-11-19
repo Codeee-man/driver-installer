@@ -79,7 +79,14 @@ $ci = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -Error
 $sac = if ($ci -and $ci.PSObject.Properties['VerifiedAndReputablePolicyState']) { [int]$ci.VerifiedAndReputablePolicyState } else { $null }
 $sacText = switch ($sac) { 0 { 'off' } 1 { 'ON' } 2 { 'evaluation mode' } $null { 'not present (Windows Server or older Windows 11)' } default { "unknown state $sac" } }
 Say 'Smart App Control' $sacText
-if ($sac -eq 1) { Problem 'Smart App Control is on. It blocks programs that are not code-signed, and Driver Installer is not signed yet. Windows Security > App & browser control > Smart App Control.' }
+$guiExe = Join-Path $Path 'driver-installer-gui.exe'
+$sig = if (Test-Path -LiteralPath $guiExe) { Get-AuthenticodeSignature -LiteralPath $guiExe } else { $null }
+$sigText = if (-not $sig) { 'n/a' } elseif ($sig.Status -eq 'Valid') { "Valid, $($sig.SignerCertificate.Subject)" } else { [string]$sig.Status }
+Say 'Code signature' $sigText
+if ($sig -and $sig.Status -notin 'Valid', 'NotSigned') {
+    Problem "The signature of driver-installer-gui.exe is $($sig.Status): $($sig.StatusMessage) If the release uses a self-signed certificate, trust its .cer (SIGNING.md); otherwise the file was changed after signing: download it again."
+}
+if ($sac -eq 1 -and (-not $sig -or $sig.Status -ne 'Valid')) { Problem 'Smart App Control is on. It blocks programs without a valid code signature from a trusted certificate authority, which this copy of Driver Installer lacks. Windows Security > App & browser control > Smart App Control.' }
 
 # 5. mark of the web
 $marked = @(Get-ChildItem -LiteralPath $Path -Recurse -File -ErrorAction SilentlyContinue | Where-Object { Get-Item -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue })

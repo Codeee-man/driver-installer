@@ -113,7 +113,15 @@ if (Test-Path -LiteralPath $prebuilt) {
     $hash = (Get-FileHash -LiteralPath (Join-Path $dest 'driver-installer-helper.exe') -Algorithm SHA256).Hash
     Write-Host "Installed to $dest (Start menu: Driver Installer)."
     Write-Host "Helper SHA-256 $hash (compare with BUILD-INFO.txt)."
-    Write-Host 'The executables are not code-signed, so UAC shows "Unknown publisher".'
+    $sig = Get-AuthenticodeSignature -LiteralPath (Join-Path $dest 'driver-installer-helper.exe')
+    if ($sig.Status -eq 'Valid') {
+        Write-Host "Signed by $($sig.SignerCertificate.Subject) (thumbprint $($sig.SignerCertificate.Thumbprint))."
+    } elseif ($sig.Status -eq 'NotSigned') {
+        Write-Host 'The executables are not code-signed, so UAC shows "Unknown publisher".'
+    } else {
+        Write-Warning "The helper's signature is $($sig.Status): $($sig.StatusMessage)"
+        Write-Warning 'If the release is signed with a self-signed certificate, trust its .cer first (SIGNING.md).'
+    }
     return
 }
 
@@ -166,4 +174,4 @@ Assert-UsersCanRun $helper
 $hash = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash
 Write-Host "Installed $helper"
 Write-Host "SHA-256   $hash"
-Write-Host 'The helper is not code-signed, so the UAC prompt will show "Unknown publisher" until you sign it (signtool).'
+Write-Host 'The helper is not code-signed, so the UAC prompt will show "Unknown publisher" until you sign it (tools\codesign_windows.py, see docs\SIGNING.md).'

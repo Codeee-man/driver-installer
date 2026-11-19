@@ -17,7 +17,11 @@ Runs PyInstaller on packaging/windows/driver-installer.spec against a staged cop
 
 Requires: Python 3.10+, `pip install pyinstaller PySide6 cryptography`. The spec also runs on
 Linux (producing Linux binaries), which is how the layout is checked without Windows.
-The executables are not code-signed; sign them (signtool) before publishing if you can.
+
+Code signing: with WINDOWS_PFX_BASE64 and WINDOWS_PFX_PASSWORD set, the three .exe files are
+Authenticode-signed with signtool (SHA-256, RFC 3161 timestamp) right after PyInstaller, before
+they are hashed and zipped. Without them the build is unsigned. See tools/codesign_windows.py
+and docs/SIGNING.md.
 """
 from __future__ import annotations
 
@@ -34,6 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_common import (FONT, FONT_LICENSE, ROOT, BuildError, resolve_version, run, sha256_file,  # noqa: E402
                           stage_source, warn_if_unpinned)
+import codesign_windows  # noqa: E402
 
 SPEC = ROOT / "packaging" / "windows" / "driver-installer.spec"
 ZIP_NAME = "driver-installer-windows.zip"
@@ -144,6 +149,15 @@ def verify(app_dir: Path, version: str) -> dict[str, str]:
     return hashes
 
 
+def sign(app_dir: Path) -> codesign_windows.SigningResult:
+    """Sign the three programs when the signing secrets are set (Windows only: signtool)."""
+    if platform.system() != "Windows":
+        if codesign_windows.secrets() is not None:
+            raise BuildError("code signing needs signtool.exe, which exists only on Windows")
+        return codesign_windows.SigningResult(False, reason="not built on Windows")
+    return codesign_windows.sign_executables([app_dir / f"{name}.exe" for name in PROGRAMS])
+
+
 def build(version: str, out: Path, work: Path) -> Path:
     if work.exists():
         shutil.rmtree(work)
@@ -161,13 +175,14 @@ def build(version: str, out: Path, work: Path) -> Path:
     for name, source in EXTRA_FILES.items():
         if source.is_file():
             shutil.copy2(source, app_dir / name)
-    hashes = verify(app_dir, version)
+    signing = sign(app_dir)
+    hashes = verify(app_dir, version)              # hashes of the files as shipped, i.e. after signing
     commit = os.environ.get("GITHUB_SHA") or subprocess.run(
         ["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     (app_dir / "BUILD-INFO.txt").write_text(
         f"Driver Installer {version}\ncommit {commit or 'unknown'}\nbuilt {dt.datetime.now(dt.timezone.utc):%Y-%m-%d %H:%M UTC} "
         f"on {platform.system()} {platform.machine()}, Python {platform.python_version()}\n\nSHA-256\n"
-        + "".join(f"  {h}  {n}\n" for n, h in hashes.items()), encoding="utf-8")
+        + "".join(f"  {h}  {n}\n" for n, h in hashes.items()) + "\n" + signing.build_info(), encoding="utf-8")
     out.mkdir(parents=True, exist_ok=True)
     target = out / ZIP_NAME
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:

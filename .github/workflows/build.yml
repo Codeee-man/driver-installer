@@ -27,6 +27,10 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 45
+    outputs:
+      signed: ${{ steps.signature.outputs.signed }}
+      signer: ${{ steps.signature.outputs.signer }}
+      thumbprint: ${{ steps.signature.outputs.thumbprint }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,6 +49,12 @@ jobs:
             if ($errors) { $errors | Format-List; exit 1 }
           }
       - name: Build driver-installer-windows.zip
+        # Signs the three .exe files (signtool, SHA-256, RFC 3161 timestamp) before hashing and
+        # zipping when both secrets exist; without them (forks) it builds unsigned with a notice.
+        # The decoded .pfx is wiped as soon as signtool returns. See docs/SIGNING.md.
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
         run: python tools/build_windows.py --out dist
       - name: Smoke test the unzipped build
         shell: pwsh
@@ -58,6 +68,46 @@ jobs:
           if ($p.ExitCode -ne 64) { throw "helper exit code $($p.ExitCode), expected 64" }
           & "$app/driver-installer.exe" gui --demo --screenshot smoke.png
           if (-not (Test-Path smoke.png)) { throw "GUI did not render" }
+      - name: Verify the Authenticode signatures in the zip
+        id: signature
+        shell: pwsh
+        env:
+          SIGNING_CONFIGURED: ${{ secrets.WINDOWS_PFX_BASE64 != '' && secrets.WINDOWS_PFX_PASSWORD != '' }}
+        run: |
+          $app = (Resolve-Path "smoke/driver-installer").Path
+          $files = 'driver-installer.exe', 'driver-installer-gui.exe', 'driver-installer-helper.exe' | ForEach-Object { Join-Path $app $_ }
+          if ($env:SIGNING_CONFIGURED -ne 'true') {
+            "::notice title=Code signing::WINDOWS_PFX_BASE64 / WINDOWS_PFX_PASSWORD are not set; the executables are unsigned."
+            foreach ($f in $files) { if ((Get-AuthenticodeSignature -LiteralPath $f).Status -ne 'NotSigned') { throw "$f carries a signature in an unsigned build" } }
+            "signed=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $cert = (Get-AuthenticodeSignature -LiteralPath $files[0]).SignerCertificate
+          if (-not $cert) { throw "signing was configured but $($files[0]) is not signed" }
+          if ($cert.Subject -eq $cert.Issuer) {
+            # A self-signed certificate is trusted nowhere. Trust it on this throwaway runner
+            # only, so the check below can require a fully valid chain.
+            "::warning title=Code signing::self-signed certificate $($cert.Subject): users must trust the .cer themselves (docs/SIGNING.md)."
+            foreach ($store in 'Root', 'TrustedPublisher') {
+              $s = [Security.Cryptography.X509Certificates.X509Store]::new($store, 'LocalMachine')
+              $s.Open('ReadWrite'); $s.Add([Security.Cryptography.X509Certificates.X509Certificate2]::new($cert.RawData)); $s.Close()
+            }
+          }
+          $signtool = python -c "import sys; sys.path.insert(0, 'tools'); import codesign_windows as c; print(c.find_signtool())"
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $f
+            $name = Split-Path $f -Leaf
+            if ($sig.Status -ne 'Valid') { throw "${name}: signature status $($sig.Status): $($sig.StatusMessage)" }
+            if ($sig.SignerCertificate.Thumbprint -ne $cert.Thumbprint) { throw "${name}: signed by a different certificate" }
+            if (-not $sig.TimeStamperCertificate) { throw "${name}: signature is not timestamped" }
+            $out = & $signtool verify /pa /tw /v $f 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { $out; throw "signtool verify failed for $name" }
+            if ($out -notmatch 'Hash of file \(sha256\)') { $out; throw "${name}: the file digest is not SHA-256" }
+            "${name}: Valid, SHA-256, timestamped by $($sig.TimeStamperCertificate.Subject)"
+          }
+          "signed=true" >> $env:GITHUB_OUTPUT
+          "signer=$($cert.Subject)" >> $env:GITHUB_OUTPUT
+          "thumbprint=$($cert.Thumbprint)" >> $env:GITHUB_OUTPUT
       - name: Install into Program Files and start as a standard user
         shell: pwsh
         run: |
@@ -179,6 +229,9 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
+          SIGNED: ${{ needs.windows.outputs.signed }}
+          SIGNER: ${{ needs.windows.outputs.signer }}
+          THUMBPRINT: ${{ needs.windows.outputs.thumbprint }}
         run: |
           set -eu
           VERSION="${TAG#v}"
@@ -209,7 +262,12 @@ jobs:
             echo "- **Windows:** unzip, then run \`install_helper.ps1\` from PowerShell **as Administrator** to install into Program Files."
             echo "- **Debian/Ubuntu:** \`sudo apt install ./$DEB\`"
             echo "- **AppImage:** \`chmod +x $APPIMAGE && ./$APPIMAGE\` (needs FUSE, or set \`APPIMAGE_EXTRACT_AND_RUN=1\`)."
-            echo "- Verify downloads with \`sha256sum -c SHA256SUMS\`. The executables are not code-signed."
+            echo "- Verify downloads with \`sha256sum -c SHA256SUMS\`."
+            if [ "$SIGNED" = "true" ]; then
+              echo "- The Windows executables are Authenticode-signed by \`$SIGNER\` (thumbprint \`$THUMBPRINT\`). Check with \`Get-AuthenticodeSignature .\\driver-installer-gui.exe\` in PowerShell."
+            else
+              echo "- The Windows executables are **not** code-signed."
+            fi
             echo
           } > ../notes.md
           cat ../notes.md
