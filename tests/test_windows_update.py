@@ -2,6 +2,7 @@
 environment fix, --debug output, and the install script's permission rules."""
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -311,7 +312,7 @@ def test_setup_script_locks_down_the_folder_and_offers_the_path_task():
     iss = (ROOT / "packaging" / "windows" / "DriverInstaller.iss").read_text()
     assert r"DefaultDirName={autopf}\Driver Installer" in iss and "PrivilegesRequired=admin" in iss
     assert "/inheritance:r /grant:r *S-1-5-32-544:(OI)(CI)F *S-1-5-18:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX" in iss
-    assert r'\*" /reset /T /C /Q' in iss and "Unblock-File" in iss and "RaiseException" in iss
+    assert r'\*" /reset /T /C /Q' in iss and ":Zone.Identifier" in iss and "RaiseException" in iss
     assert 'Description: "Add CLI command (driver-installer) to system PATH"' in iss and "Flags: unchecked" in iss
     assert '{olddata};{app}' in iss and "RemoveFromPath" in iss and "usPostUninstall" in iss
     assert r'Name: "{autoprograms}\Driver Installer"; Filename: "{app}\DriverInstaller.exe"' in iss
@@ -362,3 +363,23 @@ def test_windows_release_in_products_is_respected(products, build, ok):
 
 def test_whole_first_page_is_examined():
     assert ms_catalog.MAX_DETAILS >= 25
+
+
+def test_setup_elevates_through_uac_and_the_program_does_not():
+    """Setup.exe: per-machine, elevated via the native UAC prompt before any page, no per-user
+    override, no PowerShell needed after copying. DriverInstaller.exe: asInvoker, so scanning
+    needs no prompt; it elevates only itself, only to install."""
+    iss = (ROOT / "packaging" / "windows" / "DriverInstaller.iss").read_text()
+    setup = iss[iss.index("[Setup]"):iss.index("[Messages]")]
+    directives = dict(line.split("=", 1) for line in setup.splitlines() if "=" in line and not line.startswith((";", "#")))
+    assert directives["PrivilegesRequired"] == "admin"
+    assert directives["PrivilegesRequiredOverridesAllowed"] == ""          # no "install for me only" mode
+    assert directives["CloseApplications"] == "force"                       # a running copy cannot block the ACL reset
+    assert "powershell" not in iss.lower()                                   # nothing after copying can be policy-blocked
+    message = next(line for line in iss.splitlines() if line.startswith("AdminPrivilegesRequired="))
+    assert "UAC prompt was declined" in message and "Portable.zip" in message
+    spec = (ROOT / "packaging" / "windows" / "driver-installer.spec").read_text()
+    assert "uac_admin=False" in spec                                          # -> requestedExecutionLevel asInvoker
+    sys.path.insert(0, str(ROOT / "tools"))
+    import build_windows
+    assert "asInvoker" in build_windows.check_pe_metadata.__doc__

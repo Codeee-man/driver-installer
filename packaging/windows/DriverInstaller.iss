@@ -46,7 +46,11 @@ DefaultDirName={autopf}\Driver Installer
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 DisableReadyPage=no
+; Elevation: Setup.exe is Inno Setup's loader (manifest asInvoker). With PrivilegesRequired=admin it
+; restarts itself through the native UAC prompt before showing any page, then installs per machine.
+; No "install for me only" choice: the program must live in Program Files, so overrides are off.
 PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
@@ -56,7 +60,9 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 ChangesEnvironment=yes
-CloseApplications=yes
+; A running DriverInstaller.exe would lock its files and make the ACL reset fail: close it.
+CloseApplications=force
+RestartApplications=no
 UninstallDisplayName=Driver Installer
 UninstallDisplayIcon={app}\DriverInstaller.exe
 SetupLogging=yes
@@ -70,6 +76,10 @@ SignTool=disign
 SignedUninstaller=yes
 SignToolRetryCount=2
 #endif
+
+[Messages]
+; Shown only when Windows did not grant administrator rights (UAC declined or unavailable).
+AdminPrivilegesRequired=Driver Installer is installed for all users in Program Files, which needs administrator rights.%n%nWindows did not grant them: the UAC prompt was declined, or this account may not elevate. Start DriverInstaller-Setup.exe again and choose Yes in the Windows prompt (or right-click it and choose Run as administrator).%n%nTo use Driver Installer without installing, unzip DriverInstaller-Windows-Portable.zip instead.
 
 [Tasks]
 Name: "addtopath"; Description: "Add CLI command (driver-installer) to system PATH"; GroupDescription: "Command line:"; Flags: unchecked
@@ -135,31 +145,57 @@ begin
     Log('Removed ' + Dir + ' from the system PATH');
 end;
 
-procedure RunChecked(Exe, Params, What: string);
+function RunIcacls(Params: string): Integer;
 var
-  Code: Integer;
+  Attempt: Integer;
 begin
-  Log(What + ': ' + Exe + ' ' + Params);
-  if not Exec(Exe, Params, '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
-    RaiseException(What + ' failed (exit code ' + IntToStr(Code) + '). The installation is not protected; uninstall it and try again.');
+  Result := -1;
+  for Attempt := 1 to 3 do
+  begin
+    Log('icacls ' + Params + ' (attempt ' + IntToStr(Attempt) + ')');
+    if Exec(ExpandConstant('{sys}\icacls.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, Result) and (Result = 0) then
+      exit;
+    Sleep(1500);                         // a file still held open by a closing program
+  end;
+end;
+
+procedure ClearDownloadMarks(Dir: string);
+var
+  Rec: TFindRec;
+begin
+  // Files Setup writes carry no Zone.Identifier stream; delete any anyway (a marked runtime DLL
+  // can stop the program from starting). DeleteFile on "file:stream" removes only the stream.
+  if FindFirst(Dir + '\*', Rec) then
+  try
+    repeat
+      if (Rec.Name <> '.') and (Rec.Name <> '..') then
+        if Rec.Attributes and FILE_ATTRIBUTE_DIRECTORY <> 0 then
+          ClearDownloadMarks(Dir + '\' + Rec.Name)
+        else
+          DeleteFile(Dir + '\' + Rec.Name + ':Zone.Identifier');
+    until not FindNext(Rec);
+  finally
+    FindClose(Rec);
+  end;
 end;
 
 procedure ProtectInstallFolder;
 var
-  App, Icacls: string;
+  App: string;
+  Code: Integer;
 begin
   App := ExpandConstant('{app}');
-  Icacls := ExpandConstant('{sys}\icacls.exe');
-  // Files written by Setup carry no download mark, but clear it anyway: a marked runtime DLL
-  // can make Windows refuse to start the program.
-  RunChecked(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPath ''' + App + ''' -Recurse -File -Force | Unblock-File"',
-    'Clearing Zone.Identifier');
+  ClearDownloadMarks(App);
   // Administrators + SYSTEM: full control. Users: read & execute. Nothing inherited, so no
-  // other account can change what the UAC prompt elevates.
-  RunChecked(Icacls, '"' + App + '" /inheritance:r /grant:r *S-1-5-32-544:(OI)(CI)F *S-1-5-18:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX /Q',
-    'Setting the folder ACL');
-  RunChecked(Icacls, '"' + App + '\*" /reset /T /C /Q', 'Resetting the ACLs below the folder');
+  // other account can change what the UAC prompt elevates. Setup runs elevated, so this only
+  // fails if something outside Setup interferes; then the install must not look protected.
+  Code := RunIcacls('"' + App + '" /inheritance:r /grant:r *S-1-5-32-544:(OI)(CI)F *S-1-5-18:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX /Q');
+  if Code = 0 then
+    Code := RunIcacls('"' + App + '\*" /reset /T /C /Q');
+  if Code <> 0 then
+    RaiseException('Driver Installer was copied, but its folder could not be locked down so that only '
+      + 'administrators can change it (icacls exit code ' + IntToStr(Code) + '). Close Driver Installer '
+      + 'if it is running and run Setup again.');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

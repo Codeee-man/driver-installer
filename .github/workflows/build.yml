@@ -249,8 +249,18 @@ jobs:
           "standard user writing into the install folder: refused (exit $rc)"
           powershell -NoProfile -ExecutionPolicy Bypass -File tools\diagnose_windows.ps1 -Path $dest
           Remove-LocalUser -Name diuser
-          # Upgrade in place without the PATH task: shim and PATH entry go away.
+          # Upgrade in place without the PATH task, while the program is running from the install
+          # folder: Setup must close it (CloseApplications=force), replace its files and lock the
+          # folder down again. The shim and the PATH entry go away.
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $running = Start-Process (Join-Path $dest 'DriverInstaller.exe') -ArgumentList 'gui', '--demo' -PassThru
+          Start-Sleep 8
+          if ($running.HasExited) { throw "the GUI did not stay open for the upgrade test (exit $($running.ExitCode))" }
           Install ''
+          $env:QT_QPA_PLATFORM = $null
+          if (-not $running.WaitForExit(30000)) { Stop-Process $running -Force; throw 'Setup did not close the running program' }
+          if (-not (Get-Acl -LiteralPath $dest).AreAccessRulesProtected) { throw 'the upgrade left the folder unprotected' }
+          'upgrade while running: program closed, files replaced, folder locked down'
           if (Test-Path (Join-Path $dest 'driver-installer.cmd')) { throw 'the shim stayed after reinstalling without the PATH task' }
           if (OnPath) { throw 'the PATH entry stayed after reinstalling without the PATH task' }
           Install 'addtopath'
@@ -325,6 +335,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            CHANGELOG.md
+            tools/changelog.py
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
           path: release
@@ -343,6 +359,8 @@ jobs:
           SETUP="DriverInstaller-Setup.exe"
           DEB="driver-installer_${VERSION}_all.deb"
           APPIMAGE="driver-installer-${VERSION}-x86_64.AppImage"
+          # This version's section of CHANGELOG.md goes first ([Unreleased] stands in if it is missing).
+          python3 tools/changelog.py "$TAG" > changelog-notes.md
           cd release
           # The links below are built from these names, so the uploads must match them exactly.
           for f in "$SETUP" "$WIN" "$DEB" "$APPIMAGE"; do
@@ -355,6 +373,10 @@ jobs:
           sum() { sha256sum "$1" | cut -d' ' -f1; }
           size() { du -h "$1" | cut -f1; }
           {
+            echo "## What's changed"
+            echo
+            cat ../changelog-notes.md
+            echo
             echo "## Downloads"
             echo
             echo "| Platform | File | Size | SHA-256 |"

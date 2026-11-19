@@ -6,7 +6,7 @@ a dry-run default.
 
 ```
 pip install cryptography PySide6 pytest
-python -m pytest -q                                  # 370 tests, no admin rights or internet needed
+python -m pytest -q                                  # 379 tests, no admin rights or internet needed
 
 python src/cli.py scan                               # hardware vs. manifest (table, or --json)
 python src/cli.py check --notify                     # exit 0 up to date, 1 updates, 2+ error
@@ -23,7 +23,7 @@ driver tool. `--debug` (or LOG in the window) shows every step: devices scanned,
 results, and why each result was skipped. Every Windows driver package is checked against the
 LOLDrivers list of known vulnerable drivers before install.
 
-Releases: push a tag `vMAJOR.MINOR.PATCH` (the current line is `v1.1.x`; the next is `v1.1.2`) and
+Releases: push a tag `vMAJOR.MINOR.PATCH` (the current line is `v1.1.x`; the next is `v1.1.3`; describe it under Unreleased in `CHANGELOG.md` first) and
 `.github/workflows/build.yml` tests on Windows and Linux, installs the Windows build as a standard
 user, then attaches `DriverInstaller-Setup.exe`, `DriverInstaller-Windows-Portable.zip`, a `.deb` and an
 `.AppImage` (plus `SHA256SUMS`) to a published release. Build locally with
@@ -75,6 +75,7 @@ tools/
   diagnose_windows.ps1        why Windows refuses to start the program (read-only)
   install_helper.sh|.ps1      protected helper from a source checkout
   pin_key.sh, keygen.py, sign_manifest.py, builder.py   manifest keys and signing
+  changelog.py                CHANGELOG.md section for a release's notes
 schema/                       manifest schema 1.1 and an example
 contrib/                      systemd user units, polkit policy, desktop file, icons
 docs/                         ARCHITECTURE.md, PHASE2.md, SIGNING.md, TESTING_WINDOWS.md
