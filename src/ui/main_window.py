@@ -1,8 +1,11 @@
 """The Driver Installer window.
 
-Flow: the window opens -> scan hardware -> look for updates -> download and verify every
-update in the background (badges become final) -> the user ticks rows -> "Download and
-Install" -> confirmation -> one administrator prompt -> restore point -> install.
+Flow: the window opens -> enumerate hardware (every device appears at once, queued) -> look
+each device up online (rows settle one by one: "To update" moves up, the rest become "Up to
+date") -> download and verify every update in the background (badges become final) -> the
+user ticks rows -> "Download and Install" -> confirmation -> one administrator prompt ->
+restore point -> install. The progress bar under the table pulses while nothing can be
+counted (enumeration, a whole-PC search, the install) and counts devices or updates otherwise.
 
 The window never runs elevated. Closing it leaves no thread or process behind.
 """
@@ -14,18 +17,18 @@ from pathlib import Path
 
 from PySide6.QtCore import QModelIndex, Qt
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFrame, QGridLayout, QHBoxLayout,
-                               QHeaderView, QLabel, QMainWindow, QPlainTextEdit, QPushButton, QTableView,
-                               QVBoxLayout, QWidget)
+                               QHeaderView, QLabel, QMainWindow, QPlainTextEdit, QProgressBar, QPushButton,
+                               QTableView, QVBoxLayout, QWidget)
 
 from core import common, engine
 from core.common import ElevationError
 from core.model import FAILED
 from . import dialogs, settings, theme
 from . import verification as vf
-from .delegates import BadgeDelegate, CheckDelegate, NameDelegate
+from .delegates import BadgeDelegate, CheckDelegate, NameDelegate, Spinner
 from .models import COL_DEVICE, COL_SELECT, COL_STATUS, COL_VERIFY, DriverTableModel
 from .popover import ChecksPopover
-from .workers import Worker
+from .workers import ScanWorker, Worker
 
 TITLE = "Driver Installer"
 
@@ -107,7 +110,8 @@ class MainWindow(QMainWindow):
         for col, width in ((COL_STATUS, 190), (COL_VERIFY, 180), (COL_SELECT, 56)):
             hh.setSectionResizeMode(col, QHeaderView.Fixed)
             self.view.setColumnWidth(col, width)
-        self.badges = BadgeDelegate(self.view)
+        self.spinner = Spinner(self.view)
+        self.badges = BadgeDelegate(self.view, spinner=self.spinner)
         self.view.setItemDelegateForColumn(COL_DEVICE, NameDelegate(self.view))
         self.view.setItemDelegateForColumn(COL_STATUS, self.badges)
         self.view.setItemDelegateForColumn(COL_VERIFY, self.badges)
@@ -121,10 +125,20 @@ class MainWindow(QMainWindow):
         self.log.hide()
         layout.addWidget(self.log)
 
-        # bottom bar
+        # bottom bar: status line with the progress bar beside it, then the actions
         self.status = QLabel(objectName="statusline")
         self.status.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        layout.addWidget(self.status)
+        self.counter = QLabel(objectName="counter")
+        self.progress = QProgressBar(objectName="progress", textVisible=False)
+        self.progress.setFixedSize(220, 10)
+        self.progress.setAccessibleName("Progress")
+        status_row = QHBoxLayout()
+        status_row.setSpacing(10)
+        status_row.addWidget(self.status, 1)
+        status_row.addWidget(self.counter)
+        status_row.addWidget(self.progress, 0, Qt.AlignVCenter)
+        layout.addLayout(status_row)
+        self.progress_idle()
         bar = QHBoxLayout()
         bar.setSpacing(12)
         self.select_full = QCheckBox("Select all fully checked", tristate=True)
@@ -143,6 +157,7 @@ class MainWindow(QMainWindow):
         self.btn_install.clicked.connect(lambda: self.do_install())
         self.badges.helpRequested.connect(self.show_popover)
         self.model.selectionChanged.connect(self.update_controls)
+        self.model.spinningChanged.connect(self.spinner.set_running)
         self._listener = self._log_record
         common.audit_log().listeners.append(self._listener)
         self.say("Ready.")
@@ -203,14 +218,15 @@ class MainWindow(QMainWindow):
         window never looks idle in the gap between a thread ending and its result arriving."""
         return self._jobs > 0
 
-    def run_in_background(self, fn, on_done, on_progress=None) -> None:
+    def run_in_background(self, fn, on_done, on_progress=None, worker: Worker | None = None) -> Worker:
         self._jobs += 1
-        self.worker = Worker(fn, self)
+        self.worker = worker or Worker(fn, self)
         if on_progress:
             self.worker.progress.connect(on_progress)
         self.worker.done.connect(lambda result: self._job_done(on_done, result))
         self.worker.start()
         self.update_controls()
+        return self.worker
 
     def _job_done(self, on_done, result) -> None:
         # Runs on the GUI thread: nothing else can observe the window between these two lines,
@@ -219,7 +235,28 @@ class MainWindow(QMainWindow):
         try:
             on_done(result)
         finally:
+            if not self.busy:
+                self.progress_idle()
             self.update_controls()
+
+    # ---------------------------------------------------------- progress
+    def progress_pulse(self) -> None:
+        """Indeterminate: something runs whose length cannot be counted."""
+        self.counter.clear()
+        self.progress.setRange(0, 0)
+        self.progress.show()
+
+    def progress_count(self, done: int, total: int) -> None:
+        self.progress.setRange(0, max(total, 1))
+        self.progress.setValue(min(done, total))
+        self.counter.setText(f"{done} / {total}")
+        self.progress.show()
+
+    def progress_idle(self) -> None:
+        self.progress.setRange(0, 1)
+        self.progress.setValue(0)
+        self.progress.hide()
+        self.counter.clear()
 
     def update_controls(self) -> None:
         counts = self.model.counts()
@@ -233,6 +270,9 @@ class MainWindow(QMainWindow):
         c = self.model.counts()
         if not self.model.rows:
             return "No devices found."
+        if c["not_checked"]:
+            return (f"{c['updates']} update(s) found · {c['not_checked']} of {c['devices']} devices "
+                    "could not be checked")
         if c["updates"] == 0:
             return f"{c['devices']} devices · everything is up to date."
         return f"{c['updates']} update(s) found · {c['selected']} selected · {c['devices']} devices"
@@ -246,42 +286,79 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------- scan
     def start_scan(self) -> None:
-        """Scan, discover, then download and verify every update in the background."""
+        """Stage 1: enumerate hardware and show every device at once. Stage 2: look each one up
+        online and settle its row as soon as its answer is in, then download and verify every
+        update. All of it on a ScanWorker; the window only reacts to its signals."""
         if self.busy:
             return
         self.say("Scanning hardware…")
+        self.progress_pulse()
 
         def work(report):
+            report(("scan_progress", "Scanning hardware…", 0, 0))
             devices, upgrades = engine.scan()
             if self.ctx.demo and self.ctx.manifest is None:
                 import demo
                 self.ctx = demo.build(devices, self.workdir)
-            if engine.discovery_enabled(self.ctx):
-                report(("status", "Looking for updates (Windows Update, Microsoft Update Catalog)…" if common.OS_NAME == "windows"
-                        else "Looking for updates (fwupd, distribution driver tools)…"))
-            updates = engine.find_all_updates(devices, upgrades, self.ctx)
-            report(("loaded", devices, updates))
+            report(("devices_enumerated", devices))
+            settled: set[int] = set()
+
+            def on_device(device, ups):
+                settled.add(id(device))
+                report(("device_updated", device, list(ups)))
+
+            updates = engine.find_all_updates(
+                devices, upgrades, self.ctx,
+                progress=lambda text, done, total: report(("scan_progress", text, done, total)),
+                on_start=lambda device: report(("device_started", device)), on_device=on_device)
+            # Whatever the engine did not report device by device still reaches its row.
+            late: dict[int, tuple] = {}
+            for u in updates:
+                if id(u.device) not in settled:
+                    late.setdefault(id(u.device), (u.device, []))[1].append(u)
+            for device in devices:
+                if id(device) not in settled and id(device) not in late:
+                    late[id(device)] = (device, [])
+            for device, ups in late.values():
+                on_device(device, ups)
             for n, update in enumerate(updates, 1):
+                report(("update_verifying", update, n, len(updates)))
                 engine.verify_update(update, self.ctx)
-                report(("verified", update, n, len(updates)))
+                report(("update_verified", update, n, len(updates)))
             return devices, updates
 
-        self.run_in_background(work, self.scan_done, self.scan_progress)
+        worker = ScanWorker(work, self)
+        worker.devices_enumerated.connect(self.on_devices_enumerated)
+        worker.device_started.connect(self.model.mark_scanning)
+        worker.device_updated.connect(self.model.set_device_result)
+        worker.update_verifying.connect(self.on_update_verifying)
+        worker.update_verified.connect(self.on_update_verified)
+        worker.scan_progress.connect(self.on_scan_progress)
+        self.run_in_background(work, self.scan_done, worker=worker)
 
-    def scan_progress(self, message) -> None:
-        kind = message[0]
-        if kind == "status":
-            self.say(message[1])
-        elif kind == "loaded":
-            self.model.load(message[1], message[2])
-            if message[2]:
-                self.say(f"Downloading and verifying {len(message[2])} update(s)…")
-        elif kind == "verified":
-            _, update, n, total = message
-            self.model.refresh_update(update)
-            self.say(f"Verified {n}/{total}: {update.name[:60]}")
+    def on_devices_enumerated(self, devices) -> None:
+        self.model.load_devices(devices)
+        self.say(f"Found {len(devices)} devices. Looking for updates…")
+
+    def on_scan_progress(self, text: str, done: int, total: int) -> None:
+        if total:
+            self.progress_count(done, total)
+            self.say(f"Scanning {done} / {total} devices… ({text})" if done < total
+                     else f"Scanned {total} devices.")
+        else:
+            self.progress_pulse()
+            self.say(text)
+
+    def on_update_verifying(self, update, n: int, total: int) -> None:
+        self.progress_count(n - 1, total)
+        self.say(f"Downloading and verifying {n} / {total}: {update.name[:60]}")
+
+    def on_update_verified(self, update, n: int, total: int) -> None:
+        self.model.refresh_update(update)
+        self.progress_count(n, total)
 
     def scan_done(self, result) -> None:
+        self.model.finish_pending()                 # nothing keeps spinning after the scan ends
         if isinstance(result, Exception):
             self.say(f"Scan failed: {result}", "error")
             return
@@ -335,6 +412,7 @@ class MainWindow(QMainWindow):
             self.say("Cancelled. Nothing was installed.")
             return
         self.say("Installing… waiting for administrator approval.")
+        self.progress_pulse()                      # one elevated helper run: nothing to count
         self.run_in_background(lambda report: engine.apply(todo, self.ctx, allow_without_snapshot=allow_without_snapshot,
                                                            allow_without_blocklist=allow_without_blocklist),
                                self.install_done)

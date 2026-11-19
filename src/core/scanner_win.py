@@ -165,11 +165,11 @@ def scan(source: WmiSource | None = None) -> list[Device]:
     return devices
 
 
-def discover_updates(devices: list[Device], client=None, progress=None) -> list[tuple[Device, dict]]:
+def discover_updates(devices: list[Device], client=None, progress=None, on_result=None) -> list[tuple[Device, dict]]:
     """Find newer drivers for scanned devices in the Microsoft Update Catalog, by hardware ID.
 
     This is what lets a Windows machine work without a SafeDriver manifest. Returns
     (device, package) pairs; each package is shaped like a manifest package and marked
     origin=ms-catalog. See core/discovery/ms_catalog.py for what is sent and what is trusted."""
     from .discovery import ms_catalog
-    return ms_catalog.discover(devices, client, progress=progress)
+    return ms_catalog.discover(devices, client, progress=progress, on_result=on_result)

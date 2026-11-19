@@ -1,5 +1,11 @@
 """DriverTableModel: one row per available update, then one per up-to-date device.
 
+Rows appear as soon as the hardware is enumerated (phase "queued"), turn "scanning" while
+their own online lookup runs, and settle in place when the result arrives: a row with an
+update moves up and shows its verification while it is downloaded and checked; a device
+without a newer driver becomes "Up to date". Rows that are queued, scanning or still being
+verified report SpinnerRole, and spinningChanged tells the view when to run its animation.
+
 Selection lives here, not in the widgets, so "Select all fully checked" and the install
 button can be driven and tested without clicking. Only rows whose verification is Full or
 Partial, and that have not been installed yet, can be selected.
@@ -21,6 +27,9 @@ SubtitleRole = Qt.UserRole + 2     # second line of the device cell
 HelpRole = Qt.UserRole + 3         # True where the (?) target is drawn
 RowRole = Qt.UserRole + 4          # the DriverRow
 MutedRole = Qt.UserRole + 5        # True for rows without an update
+SpinnerRole = Qt.UserRole + 6      # True while the row is queued, being looked up or being verified
+
+QUEUED, SCANNING, DONE, NOT_CHECKED = "queued", "scanning", "done", "not-checked"
 
 
 def _is_checked(value) -> bool:
@@ -36,10 +45,19 @@ class DriverRow:
     update: object = None            # core.model.Update, or None when the device is up to date
     selected: bool = False
     outcome: dict | None = None      # result item from the installer, once installed or failed
+    phase: str = DONE                # QUEUED / SCANNING until this device's lookup is final
+    order: int = 0                   # enumeration order: rows still being looked up keep it
 
     @property
     def level(self) -> str:
         return vf.level(self.update)
+
+    @property
+    def spinning(self) -> bool:
+        if self.phase in (QUEUED, SCANNING):
+            return True
+        return (self.phase == DONE and self.update is not None and self.outcome is None
+                and self.level == vf.PENDING)
 
     @property
     def selectable(self) -> bool:
@@ -53,31 +71,126 @@ class DriverRow:
 
 class DriverTableModel(QAbstractTableModel):
     selectionChanged = Signal()
+    spinningChanged = Signal(bool)     # any row animating; the view runs its timer only then
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.rows: list[DriverRow] = []
+        self._spinning = False
 
     # ------------------------------------------------------------- loading
     def load(self, devices, updates) -> None:
+        """Everything at once (finished scans, tests)."""
         self.beginResetModel()
         with_update = {id(u.device) for u in updates}
         rows = [DriverRow(u.device, u) for u in updates]
-        rows.sort(key=lambda r: (vf.RANK.get(r.level, 9), r.device.name.lower()))
-        rows += sorted((DriverRow(d) for d in devices if id(d) not in with_update),
-                       key=lambda r: r.device.name.lower())
-        self.rows = rows
+        rows += [DriverRow(d) for d in devices if id(d) not in with_update]
+        for n, row in enumerate(rows):
+            row.order = n
+        self.rows = sorted(rows, key=self._sort_key)
         self.endResetModel()
-        self.selectionChanged.emit()
+        self._changed()
+
+    def load_devices(self, devices) -> None:
+        """Stage 1: every enumerated device, queued for its online lookup."""
+        self.beginResetModel()
+        self.rows = [DriverRow(d, phase=QUEUED, order=n) for n, d in enumerate(devices)]
+        self.endResetModel()
+        self._changed()
+
+    def mark_scanning(self, device) -> None:
+        for i, row in enumerate(self.rows):
+            if row.device is device and row.phase == QUEUED:
+                row.phase = SCANNING
+                self._repaint(i)
+        self._sync_spinning()
+
+    def set_device_result(self, device, updates) -> None:
+        """Stage 2: this device's lookup is final. Its row shows the update (moving up, its
+        verification still pending) or settles as up to date; a device that was not
+        enumerated (e.g. Linux "This computer") gets new rows."""
+        mine = [r for r in self.rows if r.device is device and r.phase != DONE]
+        if not mine and not updates:
+            return
+        updates = list(updates)
+        if mine:
+            first = mine[0]
+            first.phase, first.update = DONE, (updates.pop(0) if updates else None)
+            for extra in mine[1:]:
+                extra.phase = DONE
+        order = mine[0].order if mine else len(self.rows)
+        if updates:
+            self.beginInsertRows(QModelIndex(), len(self.rows), len(self.rows) + len(updates) - 1)
+            self.rows += [DriverRow(device, u, order=order) for u in updates]
+            self.endInsertRows()
+        if mine:
+            for i, row in enumerate(self.rows):
+                if row in mine:
+                    self._repaint(i)
+        self._resort()
+        self._changed()
+
+    def finish_pending(self) -> None:
+        """The scan ended (or failed): rows whose lookup or verification never finished say so
+        instead of spinning forever."""
+        for i, row in enumerate(self.rows):
+            if row.spinning:
+                row.phase = NOT_CHECKED
+                row.selected = False
+                self._repaint(i)
+        self._changed()
 
     def refresh_update(self, update) -> None:
-        """Repaint the row(s) of one update after its verification finished."""
+        """Repaint the row(s) of one update after its verification finished, and re-sort by level."""
         for i, row in enumerate(self.rows):
             if row.update is update:
                 if row.selected and not row.selectable:
                     row.selected = False
-                self.dataChanged.emit(self.index(i, 0), self.index(i, COL_SELECT))
+                self._repaint(i)
+        self._resort()
+        self._changed()
+
+    # ------------------------------------------------------------- order
+    @staticmethod
+    def _sort_key(row: DriverRow):
+        """Updates first (Full, Partial, pending, None), then rows still being looked up in
+        enumeration order (so they do not jump around), then devices without an update."""
+        name = row.device.name.lower()
+        if row.update is not None:
+            return 0, vf.RANK.get(row.level, 9), name, row.order
+        if row.phase in (QUEUED, SCANNING, NOT_CHECKED):
+            return 1, 0, "", row.order
+        return 2, 0, name, row.order
+
+    def _resort(self) -> None:
+        ordered = sorted(self.rows, key=self._sort_key)
+        if ordered == self.rows:
+            return
+        self.layoutAboutToBeChanged.emit()
+        old = self.rows
+        self.rows = ordered
+        where = {id(r): i for i, r in enumerate(ordered)}
+        before = self.persistentIndexList()
+        after = [self.index(where[id(old[ix.row()])], ix.column()) for ix in before]
+        self.changePersistentIndexList(before, after)
+        self.layoutChanged.emit()
+
+    def _repaint(self, i: int) -> None:
+        self.dataChanged.emit(self.index(i, 0), self.index(i, COL_SELECT))
+
+    def _changed(self) -> None:
         self.selectionChanged.emit()
+        self._sync_spinning()
+
+    def _sync_spinning(self) -> None:
+        now = any(r.spinning for r in self.rows)
+        if now != self._spinning:
+            self._spinning = now
+            self.spinningChanged.emit(now)
+
+    @property
+    def spinning(self) -> bool:
+        return self._spinning
 
     def refresh_all(self) -> None:
         for row in self.rows:
@@ -85,7 +198,7 @@ class DriverTableModel(QAbstractTableModel):
                 row.selected = False
         if self.rows:
             self.dataChanged.emit(self.index(0, 0), self.index(len(self.rows) - 1, COL_SELECT))
-        self.selectionChanged.emit()
+        self._changed()
 
     def apply_outcomes(self, items: list[dict]) -> None:
         by_id = {i.get("id"): i for i in items}
@@ -129,7 +242,9 @@ class DriverTableModel(QAbstractTableModel):
         return {"updates": sum(r.update is not None and r.outcome is None for r in self.rows),
                 "selected": len(self.selected_updates()), "devices": len(self.rows),
                 "pending": sum(r.level == vf.PENDING for r in self.rows),
-                "full": len(self.full_rows())}
+                "full": len(self.full_rows()),
+                "looking": sum(r.phase in (QUEUED, SCANNING) for r in self.rows),
+                "not_checked": sum(r.phase == NOT_CHECKED for r in self.rows)}
 
     # ------------------------------------------------------------ Qt model
     def rowCount(self, parent=QModelIndex()):
@@ -155,19 +270,24 @@ class DriverTableModel(QAbstractTableModel):
         if role == RowRole:
             return r
         if role == MutedRole:
-            return u is None or (r.outcome is not None and r.outcome.get("status") == "no-op")
+            return ((u is None and r.phase == DONE)
+                    or (r.outcome is not None and r.outcome.get("status") == "no-op"))
+        if role == SpinnerRole:
+            return col == COL_STATUS and r.spinning
         if col == COL_DEVICE:
             if role == Qt.DisplayRole:
                 return r.device.name
             if role == SubtitleRole:
                 if u is None:
-                    return f"{r.device.driver_version or 'driver version unknown'} · no newer driver found"
+                    installed = r.device.driver_version or "driver version unknown"
+                    return f"{installed} · " + {QUEUED: "waiting to look for updates", SCANNING: "looking for updates…",
+                                                NOT_CHECKED: "not checked"}.get(r.phase, "no newer driver found")
                 return f"{u.installed} → {u.available} · {u.source}"
             if role == Qt.ToolTipRole:
                 ids = ", ".join(h for h in r.device.hardware_ids if not h.startswith("raw:"))[:200]
                 return f"{r.device.name}\n{ids}" if ids else r.device.name
         elif col == COL_STATUS:
-            text, kind = vf.row_status(u, r.outcome)
+            text, kind = vf.row_status(u, r.outcome, r.phase)
             if role in (Qt.DisplayRole, Qt.AccessibleTextRole):
                 return text
             if role == BadgeRole:

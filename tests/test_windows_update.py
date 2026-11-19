@@ -138,7 +138,7 @@ def test_engine_merges_windows_update_and_catalog_newest_wins(runner, windows, m
     devs = devices()
     wifi = next(d for d in devs if "AX210" in d.name)
     catalog = {"origin": "ms-catalog", "id": "mscatalog.x", "name": "cat", "version": "24.50.0.1"}
-    monkeypatch.setattr(scanner_win, "discover_updates", lambda d, progress=None: [(wifi, catalog)])
+    monkeypatch.setattr(scanner_win, "discover_updates", lambda d, progress=None, **kw: [(wifi, catalog)])
     ctx = engine.Context(discover=True)
     (update,) = engine.find_all_updates(devs, {}, ctx)
     assert update.package is catalog and update.source == "Microsoft Update Catalog"   # newer than WU's 24.40.0.4
@@ -151,7 +151,7 @@ def test_engine_merges_windows_update_and_catalog_newest_wins(runner, windows, m
 def test_engine_reports_failures_of_each_source_separately(runner, windows, monkeypatch):
     runner.on("powershell", windows_powershell(wua=wua_result(error="0x80240440 (no internet)")))
 
-    def down(d, progress=None):
+    def down(d, progress=None, **kw):
         raise ms_catalog.CatalogError("connection refused")
     monkeypatch.setattr(scanner_win, "discover_updates", down)
     ctx = engine.Context(discover=True)
@@ -162,7 +162,7 @@ def test_engine_reports_failures_of_each_source_separately(runner, windows, monk
 
 def test_empty_windows_update_result_surfaces_the_policy(runner, windows, monkeypatch):
     runner.on("powershell", windows_powershell(wua=wua_result([], policy={"ExcludeWUDriversInQualityUpdate": 1})))
-    monkeypatch.setattr(scanner_win, "discover_updates", lambda d, progress=None: [])
+    monkeypatch.setattr(scanner_win, "discover_updates", lambda d, progress=None, **kw: [])
     ctx = engine.Context(discover=True)
     engine.find_all_updates(devices(), {}, ctx)
     assert any("ExcludeWUDriversInQualityUpdate=1" in n for n in ctx.notes)

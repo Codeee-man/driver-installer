@@ -63,12 +63,17 @@ OUTCOMES = {
 }
 
 
-def row_status(update, outcome: dict | None = None) -> tuple[str, str]:
-    """(text, badge kind) for the Status column."""
+LOOKUP = {"queued": ("Queued", "busy"), "scanning": ("Scanning…", "busy"), "not-checked": ("Not checked", "warn")}
+
+
+def row_status(update, outcome: dict | None = None, phase: str = "done") -> tuple[str, str]:
+    """(text, badge kind) for the Status column. phase: the row's lookup state (ui.models)."""
     if outcome:
         return OUTCOMES.get(outcome.get("status"), ("Failed", "alert"))
+    if phase == "not-checked":
+        return LOOKUP[phase]
     if update is None:
-        return "Up to date", "uptodate"
+        return LOOKUP.get(phase, ("Up to date", "uptodate"))
     if update.status == "pending" or (not update.checks and update.status != "failed"):
-        return "Checking", "busy"
+        return "Checking…", "busy"
     return "To update", "accent"

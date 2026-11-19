@@ -426,11 +426,18 @@ def to_package(entry: CatalogEntry, info: CatalogDetails, device: Device, query:
 
 
 def discover(devices: list[Device], client: CatalogClient | None = None, *, limit: int = MAX_DEVICES,
-             arch: str | None = None, os_build: int | None = None, progress=None) -> list[tuple[Device, dict]]:
+             arch: str | None = None, os_build: int | None = None, progress=None,
+             on_result=None) -> list[tuple[Device, dict]]:
     """Search the catalog for every device that has a PCI/USB hardware ID.
 
     Devices sharing an ID are searched once. One failed lookup does not stop the others; if
-    the very first request fails the catalog is assumed unreachable and CatalogError is raised."""
+    the very first request fails the catalog is assumed unreachable and CatalogError is raised.
+
+    progress(device) is called before a device is looked up; on_result(device, package or None)
+    as soon as the catalog's answer for it is known, for every device in `devices` (devices
+    without a searchable ID, or beyond `limit`, get None), so callers can show results while
+    the remaining lookups run."""
+    answered = on_result or (lambda device, package: None)
     client = client or CatalogClient()
     os_build = os_build if os_build is not None else _windows_build()
     found, seen, searched = [], {}, 0
@@ -438,18 +445,22 @@ def discover(devices: list[Device], client: CatalogClient | None = None, *, limi
     common.audit("catalog.start", devices=len(devices), searchable=len(searchable), os_build=os_build,
                  arch=arch or common.ARCH,
                  not_searchable=len(devices) - len(searchable))      # ACPI, ROOT, SWD, VMBUS... have no catalog ID
+    limited = False
     for device in devices:
         queries = query_ids(device)
-        if not queries:
+        if not queries or limited:
+            answered(device, None)
             continue
         key = (queries[0], device.driver_version)
         if key not in seen:
             if searched >= limit:
                 common.audit("catalog.limit", limit=limit)
-                break
+                limited = True
+                answered(device, None)
+                continue
             searched += 1
             if progress:
-                progress(device.name)
+                progress(device)
             try:
                 seen[key] = best_update(device, client, arch=arch, os_build=os_build)
             except CatalogError as exc:
@@ -459,6 +470,7 @@ def discover(devices: list[Device], client: CatalogClient | None = None, *, limi
                 seen[key] = None
         if seen[key]:
             found.append((device, dict(seen[key])))
+        answered(device, dict(seen[key]) if seen[key] else None)
     common.audit("catalog.done", searched=searched, updates=len(found))
     return found
 

@@ -81,18 +81,33 @@ def discovery_enabled(ctx: Context) -> bool:
     return ctx.discover if ctx.discover is not None else (AUTO_DISCOVER and ctx.manifest is None)
 
 
-def discover(devices: list[Device], ctx: Context, progress=None) -> list[Update]:
-    """OS-native discovery. Never raises: a failure becomes a note and an empty result."""
+def discover(devices: list[Device], ctx: Context, *, phase=None, on_start=None, on_device=None) -> list[Update]:
+    """OS-native discovery. Never raises: a failure becomes a note and an empty result.
+
+    Callbacks, all optional, for front ends that show results while the search runs:
+      phase(text, per_device)   what is running; per_device False = one search for the whole PC
+      on_start(device)          this device's own lookup starts
+      on_device(device, ups)    this device's result is final (ups may be []); a device not in
+                                `devices` can appear (Linux "This computer")
+    Devices never passed to on_device have no result from this function."""
     updates: list[Update] = []
+    phase = phase or (lambda text, per_device: None)
+    on_device = on_device or (lambda device, ups: None)
     try:
         if common.OS_NAME == "windows":
-            updates += _discover_windows(devices, ctx, progress)
+            updates += _discover_windows(devices, ctx, phase, on_start, on_device)
         elif common.OS_NAME == "linux":
+            phase("Asking the distribution's driver tools…", False)
             recs = linux_lvfs.driver_recommendations(devices)
+            by_device: dict[int, tuple[Device, list[Update]]] = {}
             for dev, rec in linux_lvfs.match_devices(recs, devices):
-                updates.append(Update(dev, rec.package, dev.driver_version or dev.driver or "not installed",
-                                      rec.package, f"distro ({rec.tool})", "", linux_lvfs.to_package(rec), "delegated",
-                                      f"{rec.reason}; installed from the distro repository"))
+                update = Update(dev, rec.package, dev.driver_version or dev.driver or "not installed",
+                                rec.package, f"distro ({rec.tool})", "", linux_lvfs.to_package(rec), "delegated",
+                                f"{rec.reason}; installed from the distro repository")
+                updates.append(update)
+                by_device.setdefault(id(dev), (dev, []))[1].append(update)
+            for dev, ups in by_device.values():
+                on_device(dev, ups)
     except (ms_catalog.CatalogError, VerificationError, OSError) as exc:
         ctx.notes.append(f"online discovery failed: {exc}")
         common.audit("discovery.failed", error=str(exc))
@@ -104,20 +119,44 @@ WINDOWS_SOURCES = {"windows-update": "Windows Update", "ms-catalog": "Microsoft 
 CATALOG_ORIGINS = tuple(WINDOWS_SOURCES)
 
 
-def _discover_windows(devices: list[Device], ctx: Context, progress=None) -> list[Update]:
+def _windows_update(dev: Device, pkg: dict) -> Update:
+    detail = "" if pkg.get("id_confirmed") else "matched by catalog search only"
+    return Update(dev, pkg["name"], dev.driver_version or "unknown", pkg["version"],
+                  WINDOWS_SOURCES[pkg["origin"]], "", pkg, "pending", detail)
+
+
+def _discover_windows(devices: list[Device], ctx: Context, phase, on_start, on_device) -> list[Update]:
     """Windows Update (what Windows itself offers this PC) plus the Microsoft Update Catalog
     (searched by hardware ID). One failing does not stop the other; per device the newer
-    driver wins, Windows Update on a tie."""
+    driver wins, Windows Update on a tie. Windows Update is one search for the whole PC, so it
+    runs first; each device's result is then final as soon as its catalog lookup is."""
     from . import scanner_win
     from .discovery import windows_update
     best: dict[int, tuple[Device, dict]] = {}
+    updates: list[Update] = []
+    finished: set[int] = set()
 
     def offer(dev: Device, pkg: dict) -> None:
         current = best.get(id(dev))
         if current is None or compare_versions(pkg["version"], current[1]["version"]) > 0:
             best[id(dev)] = (dev, pkg)
 
+    def finish(dev: Device) -> None:
+        if id(dev) in finished:
+            return
+        finished.add(id(dev))
+        chosen = best.get(id(dev))
+        ups = [_windows_update(dev, chosen[1])] if chosen else []
+        updates.extend(ups)
+        on_device(dev, ups)
+
+    def answered(dev: Device, pkg: dict | None) -> None:
+        if pkg:
+            offer(dev, pkg)
+        finish(dev)
+
     wua_count = cat_count = 0
+    phase("Asking Windows Update which drivers it offers this PC…", False)
     try:
         found, notes = windows_update.discover(devices)
         wua_count = len(found)
@@ -128,29 +167,70 @@ def _discover_windows(devices: list[Device], ctx: Context, progress=None) -> lis
     except windows_update.WindowsUpdateError as exc:
         ctx.notes.append(f"Windows Update search failed: {exc}")
         common.audit("wua.failed", error=str(exc))
+    phase("Microsoft Update Catalog", True)
     try:
-        found = scanner_win.discover_updates(devices, progress=progress)
+        found = scanner_win.discover_updates(devices, progress=on_start, on_result=answered)
         cat_count = len(found)
-        for dev, pkg in found:
-            offer(dev, pkg)
+        for dev, pkg in found:               # also when a source returns without calling back
+            if id(dev) not in finished:
+                offer(dev, pkg)
     except ms_catalog.CatalogError as exc:
         ctx.notes.append(f"Microsoft Update Catalog search failed: {exc}")
         common.audit("catalog.failed", error=str(exc))
+    for dev in devices:                      # catalog unreachable: Windows Update's answer is final
+        finish(dev)
     common.audit("discovery.windows", windows_update=wua_count, catalog=cat_count, chosen=len(best))
-    updates = []
-    for dev, pkg in best.values():
-        detail = "" if pkg.get("id_confirmed") else "matched by catalog search only"
-        updates.append(Update(dev, pkg["name"], dev.driver_version or "unknown", pkg["version"],
-                              WINDOWS_SOURCES[pkg["origin"]], "", pkg, "pending", detail))
     return updates
 
 
-def find_all_updates(devices: list[Device], upgrades: dict[str, dict], ctx: Context, progress=None) -> list[Update]:
-    """Manifest and fwupd updates, plus discovered ones for devices the manifest does not cover."""
+def find_all_updates(devices: list[Device], upgrades: dict[str, dict], ctx: Context, *,
+                     progress=None, on_start=None, on_device=None) -> list[Update]:
+    """Manifest and fwupd updates, plus discovered ones for devices the manifest does not cover.
+
+    For progressive front ends (all optional):
+      on_device(device, updates)  once per device, as soon as its result is final; updates may
+                                  be [] (up to date). Manifest/fwupd devices come first.
+      on_start(device)            a device's own online lookup begins
+      progress(text, done, total) devices finished so far; total 0 = one search for the whole
+                                  PC is running, progress cannot be counted per device
+    """
+    notify = on_device or (lambda device, ups: None)
+    report = progress or (lambda text, done, total: None)
     updates = manifest.find_updates(devices, ctx.manifest, upgrades)
+    covered: dict[int, list[Update]] = {}
+    for u in updates:
+        covered.setdefault(id(u.device), []).append(u)
+    known = {id(d) for d in devices}
+    final: set[int] = set()
+    state = {"text": "Looking for updates", "per_device": True}
+
+    def tick() -> None:
+        report(state["text"], len(final), len(devices) if state["per_device"] else 0)
+
+    def settle(dev: Device, ups: list[Update]) -> None:
+        if id(dev) in known:
+            if id(dev) in final:
+                return
+            final.add(id(dev))
+        notify(dev, ups)
+        tick()
+
+    def phase(text: str, per_device: bool) -> None:
+        state.update(text=text, per_device=per_device)
+        tick()
+
+    for dev in devices:
+        if id(dev) in covered:
+            settle(dev, covered[id(dev)])
     if discovery_enabled(ctx):
-        covered = {id(u.device) for u in updates}
-        updates += [u for u in discover(devices, ctx, progress) if id(u.device) not in covered]
+        def discovered(dev: Device, ups: list[Update]) -> None:
+            if id(dev) not in covered:
+                updates.extend(ups)
+                settle(dev, ups)
+        discover(devices, ctx, phase=phase, on_start=on_start, on_device=discovered)
+    state["per_device"] = True
+    for dev in devices:
+        settle(dev, [])
     return updates
 
 

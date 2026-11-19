@@ -7,17 +7,67 @@ repaint.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QModelIndex, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate, QToolTip
 
 from . import theme
-from .models import BadgeRole, HelpRole, MutedRole, SubtitleRole
+from .models import COL_STATUS, BadgeRole, HelpRole, MutedRole, SpinnerRole, SubtitleRole
 
 PAD_X = 12
 BADGE_H = 20
 HELP_D = 16
 ICON_W = 12                     # tick drawn before the text of badges whose theme asks for one
+SPIN_D = 14                     # loading spinner beside a "Queued" / "Scanning…" / "Checking…" pill
+TERMINAL_FRAMES = "|/-\\"        # Matrix: a terminal spinner, one character per frame
+
+
+class Spinner(QObject):
+    """One animation clock for every loading row. Repaints only the Status column of the view,
+    and runs only while the model reports spinning rows, so an idle window uses no CPU."""
+    INTERVAL_MS = 80
+    STEPS = 12                          # 30 degrees per frame for the arc
+
+    def __init__(self, view):
+        super().__init__(view)
+        self.view, self.step = view, 0
+        self.timer = QTimer(self, interval=self.INTERVAL_MS)
+        self.timer.timeout.connect(self._tick)
+
+    def set_running(self, on: bool) -> None:
+        if on and not self.timer.isActive():
+            self.timer.start()
+        elif not on and self.timer.isActive():
+            self.timer.stop()
+            self._repaint()
+
+    @property
+    def running(self) -> bool:
+        return self.timer.isActive()
+
+    def _tick(self) -> None:
+        self.step = (self.step + 1) % (self.STEPS * len(TERMINAL_FRAMES))
+        self._repaint()
+
+    def _repaint(self) -> None:
+        x = self.view.columnViewportPosition(COL_STATUS)
+        port = self.view.viewport()
+        port.update(QRect(x, 0, self.view.columnWidth(COL_STATUS), port.height()))
+
+
+def paint_spinner(painter, rect: QRectF, step: int, color: QColor) -> None:
+    if theme.current().name == theme.MATRIX:
+        painter.setFont(theme.font(11, mono=True))
+        painter.setPen(color)
+        painter.drawText(rect, Qt.AlignCenter, TERMINAL_FRAMES[step % len(TERMINAL_FRAMES)])
+        return
+    pen = QPen(color, 1.8)
+    pen.setCapStyle(Qt.RoundCap)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+    arc = rect.adjusted(2, 2, -2, -2)
+    # Qt angles: 1/16 degree, counter-clockwise; minus = clockwise rotation
+    painter.drawArc(arc, int(-step * (360 / Spinner.STEPS) * 16), 270 * 16)
 
 
 def badge_style(kind: str) -> tuple:
@@ -72,11 +122,21 @@ class NameDelegate(_Base):
 
 
 class BadgeDelegate(_Base):
-    """Pill badge from BadgeRole; for Partial (HelpRole) also a clickable (?) target.
+    """Pill badge from BadgeRole; for Partial (HelpRole) also a clickable (?) target; for rows
+    still loading (SpinnerRole) an animated spinner after the pill, driven by `spinner`.
 
     Hovering the cell shows the itemised checks as a tooltip; clicking (?) emits helpRequested
     with the global point under the (?), where the window opens the pinned check list."""
     helpRequested = Signal(QModelIndex, QPoint)
+
+    def __init__(self, parent=None, spinner: Spinner | None = None):
+        super().__init__(parent)
+        self.spinner = spinner
+
+    @classmethod
+    def spinner_rect(cls, cell: QRect, text: str, kind: str | None = None) -> QRect:
+        badge = cls.badge_rect(cell, text, kind)
+        return QRect(badge.right() + 8, cell.center().y() - SPIN_D // 2 + 1, SPIN_D, SPIN_D)
 
     @staticmethod
     def badge_font():
@@ -138,6 +198,9 @@ class BadgeDelegate(_Base):
             painter.setFont(theme.font(8, bold=True))
             painter.setPen(_color(theme.AMBER))
             painter.drawText(help_rect, Qt.AlignCenter, "?")
+        if index.data(SpinnerRole):
+            step = self.spinner.step if self.spinner else 0
+            paint_spinner(painter, QRectF(self.spinner_rect(option.rect, text, kind)), step, _color(theme.ACCENT, 200))
         painter.restore()
 
     def editorEvent(self, event, model, option, index):

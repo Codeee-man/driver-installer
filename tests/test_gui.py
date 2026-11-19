@@ -203,7 +203,7 @@ def test_window_scans_and_verifies_in_the_background(tmp_path, windows, runner, 
     devices = [Device("Wifi", hardware_ids=["pci:8086:2725"]), Device("Audio")]
     update = Update(devices[0], "Wifi driver", "1.0", "2.0", "vendor", "", {"id": "wifi", "install": {"method": "pnputil"}})
     monkeypatch.setattr(engine, "scan", lambda: (devices, {}))
-    monkeypatch.setattr(engine, "find_all_updates", lambda d, u, ctx, progress=None: [update])
+    monkeypatch.setattr(engine, "find_all_updates", lambda d, u, ctx, **kw: [update])     # reports nothing early
     seen_pending = []
 
     def verify(u, ctx, progress=None):

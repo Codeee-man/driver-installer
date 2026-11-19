@@ -216,6 +216,11 @@ def stylesheet() -> str:
     metal = _metallic(c) if t.name == CLEAN else None
     header_bg = (f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c['HEADER_TOP']}, stop:1 {c['HEADER_BOTTOM']})"
                  if metal else c["SURFACE"])
+    # Progress bar: Matrix = neon fill on the black track; Clean = brushed platinum on gunmetal.
+    bar_track = c["SURFACE"] if metal else c["BG"]
+    bar_fill = (f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c['PLATINUM_TOP']}, stop:1 {c['PLATINUM_BOTTOM']})"
+                if metal else c["ACCENT"])
+    bar_r = min(r, 4)
     return f"""
 * {{ font-family: '{fam}'; font-size: {pt(10)}; color: {c['TEXT']}; }}
 QMainWindow, QWidget#root, QDialog, QMessageBox {{ background: {c['BG']}; }}
@@ -229,6 +234,10 @@ QLabel#statusline {{ color: {c['MUTED']}; font-size: {pt(9)}; }}
 QLabel#statusline[kind="error"] {{ color: {c['RED']}; }}
 QLabel#statusline[kind="warn"] {{ color: {c['AMBER']}; }}
 QLabel#statusline[kind="ok"] {{ color: {c['GREEN']}; }}
+QProgressBar#progress {{ background: {bar_track}; border: 1px solid {c['BORDER']}; border-radius: {bar_r}px; }}
+QProgressBar#progress::chunk {{ background: {bar_fill}; border-radius: {max(bar_r - 1, 0)}px; }}
+QLabel#counter {{ color: {c['TEXT'] if not metal else c['MUTED']}; font-family: '{fam if metal else mono}';
+                 font-size: {pt(9, not metal)}; }}
 
 QTableView {{ background: {c['SURFACE']}; border: 1px solid {c['BORDER']}; border-radius: {r}px; outline: 0;
              gridline-color: transparent; selection-background-color: {c['SURFACE_SELECTED']}; }}
