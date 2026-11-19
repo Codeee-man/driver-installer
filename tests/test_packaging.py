@@ -135,13 +135,15 @@ def test_deb_build_is_reproducible(tmp_path, monkeypatch):
 
 
 # ----------------------------------------------------- Windows spec, pins
-def test_windows_spec_bundles_font_and_three_programs():
+def test_windows_spec_builds_one_windowed_program_with_font_and_licenses():
     spec = (ROOT / "packaging" / "windows" / "driver-installer.spec").read_text()
-    assert '"VT323-Regular.ttf"), os.path.join("ui", "assets", "fonts")' in spec
-    for name in ("driver-installer", "driver-installer-gui", "driver-installer-helper"):
-        assert f'"{name}"' in spec
-    assert '"PySide6", "shiboken6"' in spec                      # the helper is built without Qt
-    assert "install_helper.ps1" in build_windows.EXTRA_FILES and build_windows.ZIP_NAME == "driver-installer-windows.zip"
+    assert '(os.path.join(SRC, fonts, "VT323-Regular.ttf"), fonts)' in spec
+    assert '(os.path.join(SRC, "LICENSE"), "licenses")' in spec and '"VT323-OFL.txt"), "licenses")' in spec
+    assert 'windows_main.py' in spec and spec.count("EXE(") == 1 and "console=False" in spec
+    assert '"helper_main"' in spec                              # helper mode needs it bundled
+    assert build_windows.ZIP_NAME == "DriverInstaller-Windows-Portable.zip"
+    assert build_windows.SETUP_NAME == "DriverInstaller-Setup.exe"
+    assert not hasattr(build_windows, "EXTRA_FILES")            # nothing loose next to the program
 
 
 def test_appimage_inputs_are_pinned():
@@ -180,14 +182,17 @@ def test_frozen_build_uses_its_sibling_helper(tmp_path, linux, monkeypatch, capl
     assert "running un-installed" in caplog.text
 
 
-def test_frozen_windows_build_prefers_program_files(tmp_path, windows, monkeypatch):
+def test_frozen_windows_build_elevates_itself_unless_installed(tmp_path, windows, monkeypatch):
+    """DriverInstaller.exe is GUI, CLI and helper: a portable copy elevates itself (with a
+    warning); once DriverInstaller-Setup.exe has installed it, the Program Files copy is used."""
     monkeypatch.setattr(installer.ntpath, "join", __import__("os").path.join)
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", str(tmp_path / "unzipped" / "driver-installer.exe"))
-    (tmp_path / "unzipped").mkdir()
-    (tmp_path / "unzipped" / "driver-installer-helper.exe").write_text("")
-    assert Path(installer.helper_command("p.json")[0]) == tmp_path / "unzipped" / "driver-installer-helper.exe"
-    installed = tmp_path / "ProgramFiles" / "driver-installer" / "driver-installer-helper.exe"
+    portable = tmp_path / "unzipped" / "DriverInstaller.exe"
+    monkeypatch.setattr(sys, "executable", str(portable))
+    portable.parent.mkdir()
+    portable.write_text("")
+    assert installer.helper_command("p.json") == [str(portable.resolve()), "--apply-plan", "p.json"]
+    installed = tmp_path / "ProgramFiles" / "Driver Installer" / "DriverInstaller.exe"
     installed.parent.mkdir(parents=True)
     installed.write_text("")
     assert installer.helper_command("p.json") == [str(installed), "--apply-plan", "p.json"]

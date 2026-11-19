@@ -29,9 +29,10 @@ _LOCAL_FORMATS = {"apt-get": "deb", "dnf": "rpm", "zypper": "rpm", "pacman": "pk
 # Where an installed, root/Administrators-only helper may live, in order of preference.
 HELPER_LINUX = "/usr/local/bin/driver-installer-helper"                  # tools/install_helper.sh
 HELPER_LINUX_PACKAGED = "/usr/libexec/driver-installer/driver-installer-helper"   # the .deb package
-HELPER_WINDOWS_DIR = "driver-installer"                                   # under %ProgramFiles%
-HELPER_WINDOWS_NAMES = ("driver-installer-helper.exe", "helper.exe")      # release zip / source build
-HELPER_FROZEN_NAME = "driver-installer-helper"                            # next to a PyInstaller build
+# Under %ProgramFiles%: DriverInstaller-Setup.exe, then tools/install_helper.ps1 from a checkout.
+# On Windows the helper is DriverInstaller.exe itself, started with --apply-plan.
+HELPER_WINDOWS = (("Driver Installer", "DriverInstaller.exe"), ("driver-installer", "helper.exe"))
+HELPER_FROZEN_NAME = "driver-installer-helper"                            # next to a Linux PyInstaller build
 REPO_HELPER = Path(__file__).resolve().parents[1] / "helper_main.py"
 log = logging.getLogger("safedriver")
 
@@ -52,8 +53,8 @@ def installed_helper() -> str | None:
     On Linux the helper and its directory must be writable by root only; a helper that
     fails this is never used and never silently replaced by another copy."""
     if common.OS_NAME == "windows":
-        for name in HELPER_WINDOWS_NAMES:
-            path = ntpath.join(_program_files(), HELPER_WINDOWS_DIR, name)
+        for folder, name in HELPER_WINDOWS:
+            path = ntpath.join(_program_files(), folder, name)
             if os.path.isfile(path):
                 return path
         return None
@@ -70,7 +71,10 @@ def installed_helper() -> str | None:
 
 def _unprotected_helper() -> tuple[list[str], str]:
     """(command prefix, description) for a helper that is NOT in a protected location."""
-    if getattr(sys, "frozen", False):                    # PyInstaller build (Windows zip, or a Linux test build)
+    if getattr(sys, "frozen", False) and common.OS_NAME == "windows":
+        # DriverInstaller.exe is GUI, CLI and helper in one: it elevates itself (portable copy).
+        return [str(Path(sys.executable).resolve())], str(Path(sys.executable).resolve())
+    if getattr(sys, "frozen", False):                    # Linux PyInstaller build (tests)
         exe_dir = Path(sys.executable).resolve().parent
         name = HELPER_FROZEN_NAME + (".exe" if common.OS_NAME == "windows" else "")
         helper = exe_dir / name
@@ -95,7 +99,7 @@ def helper_command(plan_path) -> list[str]:
         return [helper, "--apply-plan", str(plan_path)]
     prefix, where = _unprotected_helper()
     if common.OS_NAME == "windows":
-        fix = "run install_helper.ps1 from an elevated PowerShell to move it into Program Files"
+        fix = "install it with DriverInstaller-Setup.exe, which puts it in Program Files"
     else:
         fix = "install the .deb package or run tools/install_helper.sh"
     log.warning(f"running un-installed: elevating {where}, which ordinary users may be able to modify; {fix}")

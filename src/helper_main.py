@@ -5,13 +5,16 @@ This is the only program SafeDriver ever runs with administrator rights. It
 accepts exactly one form of command line:
 
     driver-installer-helper --apply-plan <plan.json>
+    DriverInstaller.exe --apply-plan <plan.json>       (Windows: the same program as the GUI/CLI)
 
 No other option exists here on purpose (no --log, no --manifest), so whoever
 is allowed to elevate it cannot point it at arbitrary files. Everything inside
 the plan is treated as untrusted; see core/engine.execute_plan.
 
-Deployed by tools/install_helper.sh (/usr/local/bin/driver-installer-helper)
-and tools/install_helper.ps1 (%ProgramFiles%\\driver-installer\\helper.exe).
+Deployed by tools/install_helper.sh (/usr/local/bin/driver-installer-helper), the .deb
+(/usr/libexec/driver-installer/), DriverInstaller-Setup.exe
+(%ProgramFiles%\\Driver Installer\\DriverInstaller.exe) and, for a source checkout,
+tools/install_helper.ps1 (%ProgramFiles%\\driver-installer\\helper.exe).
 """
 from __future__ import annotations
 

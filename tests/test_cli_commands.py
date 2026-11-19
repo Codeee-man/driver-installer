@@ -192,7 +192,7 @@ def test_installed_helper_that_others_can_modify_is_refused_not_bypassed(tmp_pat
 
 def test_windows_helper_exe_in_program_files(tmp_path, windows, monkeypatch, caplog):
     assert installer.helper_command("plan.json")[1:3] == ["-I", str(installer.REPO_HELPER)]
-    assert "install_helper.ps1" in caplog.text
+    assert "DriverInstaller-Setup.exe" in caplog.text
     monkeypatch.setattr(installer.ntpath, "join", os.path.join)        # POSIX test host
     exe = tmp_path / "ProgramFiles" / "driver-installer" / "helper.exe"
     exe.parent.mkdir(parents=True)

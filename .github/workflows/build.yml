@@ -48,36 +48,94 @@ jobs:
             [System.Management.Automation.Language.Parser]::ParseFile("$PWD\tools\$script", [ref]$null, [ref]$errors) | Out-Null
             if ($errors) { $errors | Format-List; exit 1 }
           }
-      - name: Build driver-installer-windows.zip
-        # Signs the three .exe files (signtool, SHA-256, RFC 3161 timestamp) before hashing and
-        # zipping when both secrets exist; without them (forks) it builds unsigned with a notice.
-        # The decoded .pfx is wiped as soon as signtool returns. See docs/SIGNING.md.
+      - name: Make sure Inno Setup 6 is available
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue) -and -not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw 'could not install Inno Setup' }
+          }
+      - name: Build DriverInstaller-Windows-Portable.zip and DriverInstaller-Setup.exe
+        # With both secrets: DriverInstaller.exe is signed (signtool, SHA-256, RFC 3161 timestamp)
+        # right after PyInstaller, before it is hashed and zipped; Inno Setup signs Setup.exe and
+        # its uninstaller through tools/codesign_windows.py while compiling. Without them (forks)
+        # everything is unsigned, with a notice. The decoded .pfx is wiped after every signtool call.
         env:
           WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
           WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
-        run: python tools/build_windows.py --out dist
-      - name: Smoke test the unzipped build
+        run: python tools/build_windows.py --out dist --setup yes
+      - name: Smoke test the portable build
         shell: pwsh
         run: |
-          Expand-Archive dist/driver-installer-windows.zip -DestinationPath smoke
-          $app = "smoke/driver-installer"
-          & "$app/driver-installer.exe" --version
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Expand-Archive dist/DriverInstaller-Windows-Portable.zip -DestinationPath smoke
+          $app = (Resolve-Path "smoke/DriverInstaller").Path
+          $exe = Join-Path $app 'DriverInstaller.exe'
+          $top = @(Get-ChildItem -LiteralPath $app -Force | ForEach-Object Name)
+          if (Compare-Object $top @('BUILD-INFO.txt', 'DriverInstaller.exe', '_internal')) { throw "unexpected portable layout: $($top -join ', ')" }
           if (-not (Test-Path "$app/_internal/ui/assets/fonts/VT323-Regular.ttf")) { throw "font missing" }
-          $p = Start-Process "$app/driver-installer-helper.exe" -ArgumentList "--bogus" -Wait -PassThru
-          if ($p.ExitCode -ne 64) { throw "helper exit code $($p.ExitCode), expected 64" }
-          & "$app/driver-installer.exe" gui --demo --screenshot smoke.png
-          if (-not (Test-Path smoke.png)) { throw "GUI did not render" }
-      - name: Verify the Authenticode signatures in the zip
+          # CLI with redirected output (scripts, CI): Start-Process waits for a windowed program.
+          $p = Start-Process $exe -ArgumentList '--version' -Wait -PassThru -RedirectStandardOutput v.txt -RedirectStandardError e.txt
+          "redirected --version: exit $($p.ExitCode): $(Get-Content v.txt)"
+          if ($p.ExitCode -ne 0 -or -not ((Get-Content v.txt) -match 'SafeDriver')) { Get-Content e.txt; throw 'CLI output was not redirected' }
+          # PowerShell capturing the output of the windowed program
+          $captured = & $exe --version 2>&1 | Out-String
+          "captured by PowerShell: $captured"
+          if ($captured -notmatch 'SafeDriver') { throw 'PowerShell did not capture the CLI output' }
+          # elevated-helper mode: refuses an incomplete command line
+          $p = Start-Process $exe -ArgumentList '--apply-plan' -Wait -PassThru
+          if ($p.ExitCode -ne 64) { throw "helper mode exit code $($p.ExitCode), expected 64" }
+          # no arguments = the GUI (here with --demo --screenshot through the gui subcommand)
+          $p = Start-Process $exe -ArgumentList 'gui', '--demo', '--screenshot', "$PWD\smoke.png" -Wait -PassThru
+          if ($p.ExitCode -ne 0 -or -not (Test-Path smoke.png)) { throw "GUI did not render (exit $($p.ExitCode))" }
+      - name: CLI output reaches an interactive console
+        # A real console (ConPTY), nothing redirected: the windowed program must attach to the
+        # console of the cmd.exe that started it and print there.
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          python -m pip install pywinpty==2.0.14
+          python - <<'EOF'
+          import os, pathlib, threading
+          from winpty import PtyProcess
+
+          def capture(command, seconds=60):
+              """Run in a pseudo console; read on a thread so a stuck read cannot hang the job."""
+              proc, chunks = PtyProcess.spawn(command), []
+              def pump():
+                  try:
+                      while True:
+                          chunks.append(proc.read(4096))
+                  except EOFError:
+                      pass
+                  except Exception as exc:
+                      chunks.append(f"<read failed: {exc!r}>")
+              reader = threading.Thread(target=pump, daemon=True)
+              reader.start()
+              reader.join(seconds)
+              if proc.isalive():
+                  proc.terminate(force=True)
+                  chunks.append("<still running after %ss, terminated>" % seconds)
+              return "".join(chunks)
+
+          exe = pathlib.Path("smoke/DriverInstaller/DriverInstaller.exe").resolve()
+          failed = False
+          assert " " not in str(exe)       # pywinpty re-escapes quotes, so the commands use none
+          for how in (f"start /wait {exe} --version", f"{exe} --version & ping -n 6 127.0.0.1 >nul"):
+              out = capture(f"cmd /d /c {how}")
+              print(f"{how!r}:\n{out!r}", flush=True)
+              failed |= "SafeDriver" not in out
+          os._exit(1 if failed else 0)
+          EOF
+      - name: Verify the Authenticode signatures
         id: signature
         shell: pwsh
         env:
           SIGNING_CONFIGURED: ${{ secrets.WINDOWS_PFX_BASE64 != '' && secrets.WINDOWS_PFX_PASSWORD != '' }}
         run: |
-          $app = (Resolve-Path "smoke/driver-installer").Path
-          $files = 'driver-installer.exe', 'driver-installer-gui.exe', 'driver-installer-helper.exe' | ForEach-Object { Join-Path $app $_ }
+          $files = (Resolve-Path 'smoke/DriverInstaller/DriverInstaller.exe').Path, (Resolve-Path 'dist/DriverInstaller-Setup.exe').Path
           if ($env:SIGNING_CONFIGURED -ne 'true') {
-            "::notice title=Code signing::WINDOWS_PFX_BASE64 / WINDOWS_PFX_PASSWORD are not set; the executables are unsigned."
+            "::notice title=Code signing::WINDOWS_PFX_BASE64 / WINDOWS_PFX_PASSWORD are not set; DriverInstaller.exe and DriverInstaller-Setup.exe are unsigned."
             foreach ($f in $files) { if ((Get-AuthenticodeSignature -LiteralPath $f).Status -ne 'NotSigned') { throw "$f carries a signature in an unsigned build" } }
             "signed=false" >> $env:GITHUB_OUTPUT
             exit 0
@@ -86,7 +144,7 @@ jobs:
           if (-not $cert) { throw "signing was configured but $($files[0]) is not signed" }
           if ($cert.Subject -eq $cert.Issuer) {
             # A self-signed certificate is trusted nowhere. Trust it on this throwaway runner
-            # only, so the check below can require a fully valid chain.
+            # only, so the checks can require a fully valid chain.
             "::warning title=Code signing::self-signed certificate $($cert.Subject): users must trust the .cer themselves (docs/SIGNING.md)."
             foreach ($store in 'Root', 'TrustedPublisher') {
               $s = [Security.Cryptography.X509Certificates.X509Store]::new($store, 'LocalMachine')
@@ -108,21 +166,47 @@ jobs:
           "signed=true" >> $env:GITHUB_OUTPUT
           "signer=$($cert.Subject)" >> $env:GITHUB_OUTPUT
           "thumbprint=$($cert.Thumbprint)" >> $env:GITHUB_OUTPUT
-      - name: Install into Program Files and start as a standard user
+      - name: Install with DriverInstaller-Setup.exe and run as a standard user
         shell: pwsh
+        env:
+          SIGNED: ${{ steps.signature.outputs.signed }}
         run: |
-          $app = (Resolve-Path "smoke/driver-installer").Path
-          # Simulate a browser download: mark every file with the "mark of the web".
-          Get-ChildItem $app -Recurse -File | ForEach-Object { Set-Content -LiteralPath $_.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" }
-          powershell -NoProfile -ExecutionPolicy Bypass -File "$app/install_helper.ps1"
-          if ($LASTEXITCODE -ne 0) { throw "install_helper.ps1 failed" }
-          $dest = Join-Path $env:ProgramFiles 'driver-installer'
+          $setup = (Resolve-Path 'dist/DriverInstaller-Setup.exe').Path
+          $dest = Join-Path $env:ProgramFiles 'Driver Installer'
+          $envKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+          $link = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Driver Installer.lnk'
+          function Install([string]$tasks) {
+            $p = Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/TASKS=$tasks", "/LOG=$env:RUNNER_TEMP\setup.log" -Wait -PassThru
+            if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\setup.log" -Tail 40; throw "Setup exited with $($p.ExitCode)" }
+          }
+          function OnPath { ((Get-ItemProperty $envKey).Path -split ';') -contains $dest }
+          Install 'addtopath'
+          foreach ($f in 'DriverInstaller.exe', 'driver-installer.cmd', 'unins000.exe', 'BUILD-INFO.txt') { if (-not (Test-Path (Join-Path $dest $f))) { throw "$f was not installed" } }
+          if (-not (OnPath)) { throw 'the PATH task did not add the install folder to the system PATH' }
+          if (-not (Test-Path $link)) { throw 'no Start menu shortcut' }
+          # ACL: only Administrators and SYSTEM may change anything; Users read & execute; nothing inherited.
+          $acl = Get-Acl -LiteralPath $dest
+          icacls $dest
+          if (-not $acl.AreAccessRulesProtected) { throw 'the install folder still inherits permissions' }
+          $writeBits = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteExtendedAttributes, WriteAttributes, Delete, ChangePermissions, TakeOwnership'
+          foreach ($item in @(Get-Item -LiteralPath $dest) + @(Get-ChildItem -LiteralPath $dest -Recurse -Force)) {
+            foreach ($rule in (Get-Acl -LiteralPath $item.FullName).Access | Where-Object AccessControlType -eq 'Allow') {
+              $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+              if ($sid -notin 'S-1-5-32-544', 'S-1-5-18', 'S-1-5-32-545') { throw "$($item.FullName): unexpected ACE for $($rule.IdentityReference)" }
+              if ($sid -eq 'S-1-5-32-545' -and ($rule.FileSystemRights -band $writeBits)) { throw "$($item.FullName): Users can modify it" }
+            }
+          }
           $marked = @(Get-ChildItem $dest -Recurse -File | Where-Object { Get-Item -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue })
-          if ($marked.Count) { throw "$($marked.Count) installed file(s) still carry the download mark" }
-          icacls "$dest\driver-installer-gui.exe"
-          # A standard (non-administrator) account must be able to start the installed programs.
-          # Run as scheduled tasks under that account: Start-Process -Credential hangs in the
-          # runner's non-interactive session. Every wait has a deadline.
+          if ($marked.Count) { throw "$($marked.Count) installed file(s) carry the download mark" }
+          if ($env:SIGNED -eq 'true') {
+            foreach ($f in 'DriverInstaller.exe', 'unins000.exe') {
+              $sig = Get-AuthenticodeSignature (Join-Path $dest $f)
+              "${f}: $($sig.Status)"
+              if ($sig.Status -ne 'Valid') { throw "installed $f signature: $($sig.Status)" }
+            }
+          }
+          # A standard (non-administrator) account. Scheduled tasks, because Start-Process
+          # -Credential hangs in the runner's non-interactive session. Every wait has a deadline.
           $pw = 'Di-' + [guid]::NewGuid().ToString('N').Substring(0, 16) + '!a1'
           New-LocalUser -Name diuser -Password (ConvertTo-SecureString $pw -AsPlainText -Force) -AccountNeverExpires | Out-Null
           Add-LocalGroupMember -Group (Get-LocalGroup -SID 'S-1-5-32-545').Name -Member diuser
@@ -150,20 +234,40 @@ jobs:
             return $rc
           }
           $out = 'C:\Users\Public\di-version.txt'
-          $rc = Invoke-AsUser 'di-cli' "`"$dest\driver-installer.exe`" --version > $out 2>&1"
-          "standard user CLI: exit $rc, output: $(Get-Content $out -ErrorAction SilentlyContinue)"
-          if ($rc -ne 0 -or -not ((Get-Content $out -ErrorAction SilentlyContinue) -match 'SafeDriver')) { throw "a standard user could not start driver-installer.exe" }
+          $rc = Invoke-AsUser 'di-cli' "`"$dest\driver-installer.cmd`" --version > $out 2>&1"
+          "standard user, driver-installer.cmd --version: exit $rc, output: $(Get-Content $out -ErrorAction SilentlyContinue)"
+          if ($rc -ne 0 -or -not ((Get-Content $out -ErrorAction SilentlyContinue) -match 'SafeDriver')) { throw 'a standard user could not run the CLI' }
+          $rc = Invoke-AsUser 'di-rc' "`"$dest\driver-installer.cmd`" --apply-plan"
+          "standard user, driver-installer.cmd --apply-plan: exit $rc (64 expected: the shim passes exit codes on)"
+          if ($rc -ne 64) { throw "the .cmd shim returned $rc, expected 64" }
           $shot = 'C:\Users\Public\gui-standard-user.png'
-          $rc = Invoke-AsUser 'di-gui' "set QT_QPA_PLATFORM=offscreen&& `"$dest\driver-installer-gui.exe`" --demo --screenshot $shot > C:\Users\Public\di-gui.txt 2>&1"
+          $rc = Invoke-AsUser 'di-gui' "set QT_QPA_PLATFORM=offscreen&& start `"`" /wait `"$dest\DriverInstaller.exe`" gui --demo --screenshot $shot"
           "standard user GUI: exit $rc"
-          if ($rc -ne 0 -or -not (Test-Path $shot)) { Get-Content C:\Users\Public\di-gui.txt -ErrorAction SilentlyContinue; throw "a standard user could not start driver-installer-gui.exe" }
-          powershell -NoProfile -ExecutionPolicy Bypass -File "$dest\diagnose_windows.ps1"
+          if ($rc -ne 0 -or -not (Test-Path $shot)) { throw 'a standard user could not start the GUI' }
+          $rc = Invoke-AsUser 'di-write' "echo x> `"$dest\written-by-user.txt`""
+          if (Test-Path (Join-Path $dest 'written-by-user.txt')) { throw 'a standard user could write into the install folder' }
+          "standard user writing into the install folder: refused (exit $rc)"
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools\diagnose_windows.ps1 -Path $dest
           Remove-LocalUser -Name diuser
-          powershell -NoProfile -ExecutionPolicy Bypass -File "$app/install_helper.ps1" -Uninstall
+          # Upgrade in place without the PATH task: shim and PATH entry go away.
+          Install ''
+          if (Test-Path (Join-Path $dest 'driver-installer.cmd')) { throw 'the shim stayed after reinstalling without the PATH task' }
+          if (OnPath) { throw 'the PATH entry stayed after reinstalling without the PATH task' }
+          Install 'addtopath'
+          # Uninstall: the uninstaller re-launches itself from %TEMP%, so wait for the files to go.
+          Start-Process (Join-Path $dest 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          $deadline = (Get-Date).AddMinutes(2)
+          while ((Test-Path (Join-Path $dest 'DriverInstaller.exe')) -and (Get-Date) -lt $deadline) { Start-Sleep 2 }
+          if (Test-Path (Join-Path $dest 'DriverInstaller.exe')) { throw 'uninstall left DriverInstaller.exe behind' }
+          if (OnPath) { throw 'uninstall left the PATH entry behind' }
+          if (Test-Path $link) { throw 'uninstall left the Start menu shortcut behind' }
+          'install, PATH task, ACL, standard-user CLI/GUI, upgrade and uninstall: OK'
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: dist/driver-installer-windows.zip
+          path: |
+            dist/DriverInstaller-Windows-Portable.zip
+            dist/DriverInstaller-Setup.exe
           if-no-files-found: error
 
   linux:
@@ -235,17 +339,18 @@ jobs:
         run: |
           set -eu
           VERSION="${TAG#v}"
-          WIN="driver-installer-windows.zip"
+          WIN="DriverInstaller-Windows-Portable.zip"
+          SETUP="DriverInstaller-Setup.exe"
           DEB="driver-installer_${VERSION}_all.deb"
           APPIMAGE="driver-installer-${VERSION}-x86_64.AppImage"
           cd release
           # The links below are built from these names, so the uploads must match them exactly.
-          for f in "$WIN" "$DEB" "$APPIMAGE"; do
+          for f in "$SETUP" "$WIN" "$DEB" "$APPIMAGE"; do
             test -f "$f" || { echo "::error::expected asset $f was not built"; ls -la; exit 1; }
           done
-          extra=$(ls | grep -vxF -e "$WIN" -e "$DEB" -e "$APPIMAGE" || true)
+          extra=$(ls | grep -vxF -e "$SETUP" -e "$WIN" -e "$DEB" -e "$APPIMAGE" || true)
           test -z "$extra" || { echo "::error::unexpected files: $extra"; exit 1; }
-          sha256sum "$WIN" "$DEB" "$APPIMAGE" | tee SHA256SUMS
+          sha256sum "$SETUP" "$WIN" "$DEB" "$APPIMAGE" | tee SHA256SUMS
           URL="https://github.com/${REPO}/releases/download/${TAG}"
           sum() { sha256sum "$1" | cut -d' ' -f1; }
           size() { du -h "$1" | cut -f1; }
@@ -254,19 +359,20 @@ jobs:
             echo
             echo "| Platform | File | Size | SHA-256 |"
             echo "|---|---|---|---|"
-            echo "| **Windows (x64)** | [$WIN]($URL/$WIN) | $(size "$WIN") | \`$(sum "$WIN")\` |"
+            echo "| **Windows installer (x64)** | [$SETUP]($URL/$SETUP) | $(size "$SETUP") | \`$(sum "$SETUP")\` |"
+            echo "| **Windows portable (x64)** | [$WIN]($URL/$WIN) | $(size "$WIN") | \`$(sum "$WIN")\` |"
             echo "| **Linux (Debian/Ubuntu)** | [$DEB]($URL/$DEB) | $(size "$DEB") | \`$(sum "$DEB")\` |"
             echo "| **Linux (portable)** | [$APPIMAGE]($URL/$APPIMAGE) | $(size "$APPIMAGE") | \`$(sum "$APPIMAGE")\` |"
             echo "| **Checksums** | [SHA256SUMS]($URL/SHA256SUMS) | | |"
             echo
-            echo "- **Windows:** unzip, then run \`install_helper.ps1\` from PowerShell **as Administrator** to install into Program Files."
+            echo "- **Windows:** run \`$SETUP\` (installs to Program Files; optional \`driver-installer\` command on PATH), or unzip \`$WIN\` and start \`DriverInstaller.exe\`. The installed copy is protected against changes by other accounts; the portable one elevates itself from wherever you unzipped it."
             echo "- **Debian/Ubuntu:** \`sudo apt install ./$DEB\`"
             echo "- **AppImage:** \`chmod +x $APPIMAGE && ./$APPIMAGE\` (needs FUSE, or set \`APPIMAGE_EXTRACT_AND_RUN=1\`)."
             echo "- Verify downloads with \`sha256sum -c SHA256SUMS\`."
             if [ "$SIGNED" = "true" ]; then
-              echo "- The Windows executables are Authenticode-signed by \`$SIGNER\` (thumbprint \`$THUMBPRINT\`). Check with \`Get-AuthenticodeSignature .\\driver-installer-gui.exe\` in PowerShell."
+              echo "- \`$SETUP\` and \`DriverInstaller.exe\` are Authenticode-signed by \`$SIGNER\` (thumbprint \`$THUMBPRINT\`). Check with \`Get-AuthenticodeSignature .\\$SETUP\` in PowerShell."
             else
-              echo "- The Windows executables are **not** code-signed."
+              echo "- The Windows programs are **not** code-signed."
             fi
             echo
           } > ../notes.md
@@ -279,7 +385,8 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            release/driver-installer-windows.zip
+            release/DriverInstaller-Setup.exe
+            release/DriverInstaller-Windows-Portable.zip
             release/driver-installer_*_all.deb
             release/driver-installer-*-x86_64.AppImage
             release/SHA256SUMS

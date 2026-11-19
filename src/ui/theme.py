@@ -1,4 +1,5 @@
-"""Themes: "Matrix" (black, neon green, pixel terminal font) and "Clean" (neutral, system font).
+"""Themes: "Matrix" (black, neon green, pixel terminal font) and "Clean" (Metallic Monochrome:
+obsidian surfaces, brushed-silver borders and a platinum primary button, system sans-serif).
 
 The current theme is process-wide. Colour tokens are read as module attributes
 (`theme.ACCENT`, `theme.BG`, ...) and always resolve against the current theme, so painted
@@ -8,7 +9,6 @@ Fonts
   Matrix  bundled VT323 (SIL OFL, assets/fonts/) registered at start-up, then
           Fixedsys Excelsior, PxPlus IBM VGA8, Terminus, Courier New, Consolas, system mono.
   Clean   Segoe UI, Inter, Roboto, then the platform's UI font.
-  Clean follows the operating system's light or dark setting where Qt can read it.
 """
 from __future__ import annotations
 
@@ -29,7 +29,9 @@ class Theme:
     name: str
     label: str                          # shown on the theme toggle
     colors: dict                        # token -> "#rrggbb"
-    badges: dict                        # kind -> (text, border, fill alpha 0-255, glow)
+    badges: dict                        # kind -> (text, border, fill alpha 0-255, glow[, fill, icon])
+                                        #   fill: explicit fill colour instead of text colour + alpha
+                                        #   icon: "check" draws a tick before the text
     fonts: tuple                        # preferred families, best first
     mono_fonts: tuple
     radius: int                         # buttons, table, panels
@@ -68,45 +70,50 @@ MATRIX_THEME = Theme(
     header_labels={"log": "LOG", "rescan": "RESCAN"},
 )
 
-_CLEAN_DARK = {
-    "BG": "#1C1D21", "SURFACE": "#25272C", "SURFACE_HOVER": "#2C2F35", "SURFACE_SELECTED": "#31353D",
-    "TEXT": "#E8EAED", "ACCENT": "#4C8DFF", "ON_ACCENT": "#FFFFFF", "ACCENT_HOVER": "#6AA0FF",
-    "GREEN": "#4ADE80", "MUTED": "#A4A9B3", "MUTED_DIM": "#7D838E", "BORDER": "#3A3D44", "BORDER_DIM": "#2E3137",
-    "FOCUS": "#9DBDFF", "DISABLED": "#5C616B", "AMBER": "#FBBF24", "AMBER_BORDER": "#6B5212",
-    "RED": "#F87171", "RED_BORDER": "#6E2A2A", "SLATE": "#8B919C", "SLATE_DIM": "#6C727C",
-}
-_CLEAN_LIGHT = {
-    "BG": "#F4F5F7", "SURFACE": "#FFFFFF", "SURFACE_HOVER": "#F5F7FA", "SURFACE_SELECTED": "#E8F0FE",
-    "TEXT": "#1F2328", "ACCENT": "#2563EB", "ON_ACCENT": "#FFFFFF", "ACCENT_HOVER": "#1D4ED8",
-    "GREEN": "#15803D", "MUTED": "#5F6670", "MUTED_DIM": "#7A818C", "BORDER": "#D9DDE3", "BORDER_DIM": "#ECEEF1",
-    "FOCUS": "#93B4F5", "DISABLED": "#A9AFB8", "AMBER": "#B45309", "AMBER_BORDER": "#F2D9B1",
-    "RED": "#B91C1C", "RED_BORDER": "#F3C6C6", "SLATE": "#6B7280", "SLATE_DIM": "#8A909A",
+# Metallic Monochrome (Obsidian & Brushed Silver). Colour, where it remains, only marks a problem.
+_CLEAN_COLORS = {
+    "BG": "#0D0F12",                    # matte obsidian window
+    "SURFACE": "#15181E",               # gunmetal table and panels
+    "SURFACE_HOVER": "#1A1E25", "SURFACE_SELECTED": "#21262F",
+    "HEADER_TOP": "#1D2129", "HEADER_BOTTOM": "#14171D",
+    "TEXT": "#F4F6F9",                  # titanium white
+    "MUTED": "#8C95A4",                 # cool steel: secondary metadata
+    "MUTED_DIM": "#6E7685",
+    "SLATE": "#565E6B", "SLATE_DIM": "#4A515C",   # up-to-date rows
+    "BORDER": "#2B313C", "BORDER_HOVER": "#4A5364", "BORDER_DIM": "#1E232B",
+    "ACCENT": "#E8ECF2", "ACCENT_HOVER": "#FFFFFF", "ON_ACCENT": "#0D0F12",
+    "PLATINUM_TOP": "#E8ECF2", "PLATINUM_BOTTOM": "#C2C9D4", "PLATINUM_EDGE": "#9AA3B1",
+    "PLATINUM_HIGHLIGHT": "#FFFFFF",
+    "SILVER": "#E4E8EF", "SILVER_FILL": "#232832",
+    "GREEN": "#F4F6F9",                 # "ok" is platinum, not green
+    "FOCUS": "#A9B3C2", "DISABLED": "#474E5A",
+    "AMBER": "#C8B99A", "AMBER_BORDER": "#6B6352",   # champagne steel: Partial and (?)
+    "RED": "#D47A7A", "RED_BORDER": "#5E3838",       # muted crimson steel
 }
 
 
-def _clean(colors: dict) -> Theme:
-    c = colors
+def _clean(c: dict) -> Theme:
     return Theme(
         name=CLEAN, label="[ CLEAN ]", colors=c,
         badges={
-            "full": (c["GREEN"], c["GREEN"], 30, False),
-            "partial": (c["AMBER"], c["AMBER_BORDER"], 30, False),
-            "none": (c["RED"], c["RED_BORDER"], 30, False),
-            "accent": (c["ACCENT"], c["ACCENT"], 28, False),
+            "full": (c["TEXT"], c["TEXT"], 0, False, None, "check"),
+            "partial": (c["AMBER"], c["AMBER"], 0, False),
+            "none": (c["RED"], c["RED"], 0, False),
+            "accent": (c["SILVER"], c["BORDER_HOVER"], 0, False, c["SILVER_FILL"]),   # "To update"
             "uptodate": (c["SLATE"], c["BORDER"], 0, False),
             "busy": (c["MUTED_DIM"], c["BORDER"], 0, False),
-            "ok": (c["GREEN"], c["GREEN"], 30, False),
-            "warn": (c["AMBER"], c["AMBER_BORDER"], 30, False),
-            "alert": (c["RED"], c["RED_BORDER"], 30, False),
+            "ok": (c["TEXT"], c["MUTED"], 0, False, c["SILVER_FILL"], "check"),     # "Installed"
+            "warn": (c["AMBER"], c["AMBER_BORDER"], 0, False),
+            "alert": (c["RED"], c["RED_BORDER"], 0, False),
         },
         fonts=("Segoe UI Variable Text", "Segoe UI", "Inter", "Roboto", "Cantarell", "Noto Sans", "Ubuntu"),
         mono_fonts=("Cascadia Mono", "Consolas", "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono"),
-        radius=6, badge_radius=10, uppercase=False, letter_spacing=0.0, title_pt=14, title_spacing=0, row_height=52,
+        radius=6, badge_radius=10, uppercase=True, letter_spacing=0.8, title_pt=14, title_spacing=1, row_height=52,
         header_labels={"log": "Log", "rescan": "Rescan"},
     )
 
 
-CLEAN_DARK_THEME, CLEAN_LIGHT_THEME = _clean(_CLEAN_DARK), _clean(_CLEAN_LIGHT)
+CLEAN_THEME = _clean(_CLEAN_COLORS)
 
 _current: Theme = MATRIX_THEME
 _fonts_registered = False
@@ -118,27 +125,16 @@ def current() -> Theme:
     return _current
 
 
-def system_prefers_light() -> bool:
-    try:
-        from PySide6.QtCore import Qt
-        from PySide6.QtGui import QGuiApplication
-        return QGuiApplication.styleHints().colorScheme() == Qt.ColorScheme.Light
-    except Exception:                    # no app yet, or a Qt without colour-scheme support
-        return False
+def resolve(name: str | None) -> Theme:
+    return CLEAN_THEME if name == CLEAN else MATRIX_THEME
 
 
-def resolve(name: str | None, light: bool | None = None) -> Theme:
-    if name == CLEAN:
-        return CLEAN_LIGHT_THEME if (system_prefers_light() if light is None else light) else CLEAN_DARK_THEME
-    return MATRIX_THEME
-
-
-def set_current(name: str, light: bool | None = None) -> Theme:
+def set_current(name: str) -> Theme:
     """Switch the process-wide theme. Callers re-apply stylesheet() and repaint."""
     global _current
     if name not in NAMES:
         raise ValueError(f"unknown theme {name!r}; choose from {', '.join(NAMES)}")
-    _current = resolve(name, light)
+    _current = resolve(name)
     return _current
 
 
@@ -217,6 +213,9 @@ def stylesheet() -> str:
     r = t.radius
     bold = "700" if fam not in FONT_SCALE else "400"
     caps_header = "font-weight: 700;" if not t.uppercase else f"font-weight: {bold};"
+    metal = _metallic(c) if t.name == CLEAN else None
+    header_bg = (f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c['HEADER_TOP']}, stop:1 {c['HEADER_BOTTOM']})"
+                 if metal else c["SURFACE"])
     return f"""
 * {{ font-family: '{fam}'; font-size: {pt(10)}; color: {c['TEXT']}; }}
 QMainWindow, QWidget#root, QDialog, QMessageBox {{ background: {c['BG']}; }}
@@ -234,8 +233,9 @@ QLabel#statusline[kind="ok"] {{ color: {c['GREEN']}; }}
 QTableView {{ background: {c['SURFACE']}; border: 1px solid {c['BORDER']}; border-radius: {r}px; outline: 0;
              gridline-color: transparent; selection-background-color: {c['SURFACE_SELECTED']}; }}
 QHeaderView {{ background: {c['SURFACE']}; border: none; border-top-left-radius: {r}px; border-top-right-radius: {r}px; }}
-QHeaderView::section {{ background: {c['SURFACE']}; color: {c['MUTED_DIM']}; border: none;
-                        border-bottom: 1px solid {c['BORDER']}; padding: 7px 12px; font-size: {pt(8)}; {caps_header} }}
+QHeaderView::section {{ background: {header_bg}; color: {c['MUTED_DIM'] if metal is None else c['MUTED']}; border: none;
+                        border-bottom: 1px solid {c['BORDER']}; padding: 7px 12px; font-size: {pt(8)}; {caps_header}
+                        letter-spacing: {0.8 if metal else 0}px; }}
 
 QPushButton {{ background: {c['SURFACE']}; color: {c['MUTED']}; border: 1px solid {c['BORDER']}; border-radius: {r}px;
               padding: 7px 16px; }}
@@ -278,9 +278,41 @@ QToolTip {{ background: {c['SURFACE']}; color: {c['TEXT']}; border: 1px solid {c
 QMessageBox QLabel {{ color: {c['TEXT']}; }}
 QMessageBox QTextEdit {{ background: {c['SURFACE']}; color: {c['MUTED']}; border: 1px solid {c['BORDER']}; }}
 
+{metal or ''}
 QScrollBar:vertical {{ background: {c['SURFACE']}; width: 8px; margin: 0; }}
 QScrollBar::handle:vertical {{ background: {c['BORDER']}; min-height: 24px; border-radius: 3px; }}
 QScrollBar::handle:vertical:hover {{ background: {c['MUTED_DIM']}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
+"""
+
+
+def _metallic(c: dict) -> str:
+    """Clean only, after the shared rules (so these win): brushed-steel borders that brighten on
+    hover, a gradient header, and the primary action as a brushed-platinum button."""
+    plate = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c['PLATINUM_TOP']}, stop:1 {c['PLATINUM_BOTTOM']})"
+    plate_hover = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #F7F9FC, stop:1 #D3D9E2)"
+    plate_down = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c['PLATINUM_BOTTOM']}, stop:1 {c['PLATINUM_TOP']})"
+    return f"""
+QHeaderView {{ background: {c['HEADER_BOTTOM']}; }}
+QPushButton {{ background: {c['SURFACE']}; color: {c['MUTED']}; border: 1px solid {c['BORDER']}; }}
+QPushButton:hover {{ color: {c['TEXT']}; border-color: {c['BORDER_HOVER']}; background: {c['SURFACE_HOVER']}; }}
+QPushButton:focus {{ border-color: {c['BORDER_HOVER']}; }}
+QPushButton#primary {{ background: {plate}; color: {c['ON_ACCENT']}; font-weight: 700;
+                      border: 1px solid {c['PLATINUM_EDGE']}; border-top: 1px solid {c['PLATINUM_HIGHLIGHT']}; }}
+QPushButton#primary:hover {{ background: {plate_hover}; border-color: {c['PLATINUM_BOTTOM']};
+                            border-top: 1px solid {c['PLATINUM_HIGHLIGHT']}; }}
+QPushButton#primary:pressed {{ background: {plate_down}; border-top: 1px solid {c['PLATINUM_EDGE']}; }}
+QPushButton#primary:focus {{ border: 1px solid {c['FOCUS']}; border-top: 1px solid {c['PLATINUM_HIGHLIGHT']}; }}
+QPushButton#primary:disabled {{ background: {c['SURFACE']}; color: {c['DISABLED']}; border: 1px solid {c['BORDER']}; }}
+QPushButton#ghost:hover, QPushButton#ghost:checked {{ color: {c['TEXT']}; border-color: {c['BORDER_HOVER']}; }}
+QTableView {{ border-color: {c['BORDER']}; }}
+QTableView:hover {{ border-color: {c['BORDER_HOVER']}; }}
+QCheckBox:hover {{ color: {c['TEXT']}; }}
+QCheckBox::indicator {{ border-color: {c['BORDER_HOVER']}; background: {c['BG']}; }}
+QCheckBox::indicator:hover {{ border-color: {c['MUTED']}; }}
+QCheckBox::indicator:checked {{ background: {plate}; border-color: {c['PLATINUM_EDGE']}; }}
+QFrame#popover {{ border-color: {c['BORDER_HOVER']}; }}
+QToolTip {{ border-color: {c['BORDER_HOVER']}; }}
+QScrollBar::handle:vertical:hover {{ background: {c['BORDER_HOVER']}; }}
 """

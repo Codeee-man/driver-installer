@@ -14,28 +14,28 @@
     5. "Mark of the web" (Zone.Identifier) left on the unzipped files
     6. Folder permissions (ACL): Users need Read & Execute
     7. AppLocker / Windows Defender Application Control policies
-    8. Whether driver-installer.exe actually starts
+    8. Whether DriverInstaller.exe actually starts
 
   Run it as your normal user first; run it again as Administrator to also see Defender history.
 
 .PARAMETER Path
-  Folder that contains driver-installer-gui.exe. Default: the folder of this script, else
-  %ProgramFiles%\driver-installer.
+  Folder that contains DriverInstaller.exe. Default: the folder of this script if it is there,
+  else %ProgramFiles%\Driver Installer (where DriverInstaller-Setup.exe installs it).
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\diagnose_windows.ps1
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File .\diagnose_windows.ps1 -Path "$env:ProgramFiles\driver-installer"
+  powershell -ExecutionPolicy Bypass -File .\diagnose_windows.ps1 -Path "$env:USERPROFILE\Downloads\DriverInstaller"
 #>
 [CmdletBinding()]
 param([string]$Path)
 $ErrorActionPreference = 'Continue'
 Set-StrictMode -Version Latest
 
-$exes = 'driver-installer.exe', 'driver-installer-gui.exe', 'driver-installer-helper.exe'
+$exes = @('DriverInstaller.exe')
 if (-not $Path) {
-    $Path = if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'driver-installer-gui.exe')) { $PSScriptRoot }
-            else { Join-Path $env:ProgramFiles 'driver-installer' }
+    $Path = if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'DriverInstaller.exe')) { $PSScriptRoot }
+            else { Join-Path $env:ProgramFiles 'Driver Installer' }
 }
 $findings = New-Object System.Collections.Generic.List[string]
 function Say([string]$label, [string]$text) { Write-Host ('{0,-22} {1}' -f $label, $text) }
@@ -63,13 +63,13 @@ if (-not (Test-Path -LiteralPath (Join-Path $Path '_internal'))) { Problem "The 
 try {
     $mp = Get-MpComputerStatus -ErrorAction Stop
     Say 'Defender' ("real-time protection {0}, signatures {1}" -f $mp.RealTimeProtectionEnabled, $mp.AntivirusSignatureVersion)
-    $hits = @(Get-MpThreatDetection -ErrorAction Stop | Where-Object { @($_.Resources) -match [regex]::Escape('driver-installer') })
+    $hits = @(Get-MpThreatDetection -ErrorAction Stop | Where-Object { @($_.Resources) -match '(?i)driver[- ]?installer' })
     foreach ($h in $hits) {
         $threat = @(Get-MpThreat -ThreatID $h.ThreatID -ErrorAction SilentlyContinue) | Select-Object -First 1
         $name = if ($threat) { $threat.ThreatName } else { "threat $($h.ThreatID)" }
         Problem ("Defender detected {0} in {1} on {2} (action {3}). Probably a false positive for an unsigned PyInstaller program: restore it under Windows Security > Protection history, and report it at https://www.microsoft.com/wdsi/filesubmission" -f $name, (@($h.Resources) -join ', '), $h.InitialDetectionTime, $h.ThreatStatusID)
     }
-    if (-not $hits) { Say '' 'no Defender detections for driver-installer' }
+    if (-not $hits) { Say '' 'no Defender detections for Driver Installer' }
 } catch {
     Say 'Defender' $(if ($isAdmin) { "not readable: $($_.Exception.Message)" } else { 'history needs Administrator; run this script again elevated' })
 }
@@ -79,19 +79,19 @@ $ci = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -Error
 $sac = if ($ci -and $ci.PSObject.Properties['VerifiedAndReputablePolicyState']) { [int]$ci.VerifiedAndReputablePolicyState } else { $null }
 $sacText = switch ($sac) { 0 { 'off' } 1 { 'ON' } 2 { 'evaluation mode' } $null { 'not present (Windows Server or older Windows 11)' } default { "unknown state $sac" } }
 Say 'Smart App Control' $sacText
-$guiExe = Join-Path $Path 'driver-installer-gui.exe'
+$guiExe = Join-Path $Path 'DriverInstaller.exe'
 $sig = if (Test-Path -LiteralPath $guiExe) { Get-AuthenticodeSignature -LiteralPath $guiExe } else { $null }
 $sigText = if (-not $sig) { 'n/a' } elseif ($sig.Status -eq 'Valid') { "Valid, $($sig.SignerCertificate.Subject)" } else { [string]$sig.Status }
 Say 'Code signature' $sigText
 if ($sig -and $sig.Status -notin 'Valid', 'NotSigned') {
-    Problem "The signature of driver-installer-gui.exe is $($sig.Status): $($sig.StatusMessage) If the release uses a self-signed certificate, trust its .cer (SIGNING.md); otherwise the file was changed after signing: download it again."
+    Problem "The signature of DriverInstaller.exe is $($sig.Status): $($sig.StatusMessage) If the release uses a self-signed certificate, trust its .cer (SIGNING.md); otherwise the file was changed after signing: download it again."
 }
 if ($sac -eq 1 -and (-not $sig -or $sig.Status -ne 'Valid')) { Problem 'Smart App Control is on. It blocks programs without a valid code signature from a trusted certificate authority, which this copy of Driver Installer lacks. Windows Security > App & browser control > Smart App Control.' }
 
 # 5. mark of the web
 $marked = @(Get-ChildItem -LiteralPath $Path -Recurse -File -ErrorAction SilentlyContinue | Where-Object { Get-Item -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue })
 Say 'Download mark' ("{0} file(s) still carry Zone.Identifier" -f $marked.Count)
-if ($marked.Count) { Problem 'Files still carry the download mark. Run install_helper.ps1 as Administrator (it removes it), or: Get-ChildItem -Recurse | Unblock-File' }
+if ($marked.Count) { Problem 'Files still carry the download mark. Install with DriverInstaller-Setup.exe instead, or, in the unzipped folder: Get-ChildItem -Recurse | Unblock-File' }
 
 # 6. permissions
 foreach ($exe in $exes) {
@@ -100,7 +100,7 @@ foreach ($exe in $exes) {
     $text = (& icacls $file 2>&1 | Select-Object -Skip 0) -join ' '
     try { [IO.File]::OpenRead($file).Close(); $readable = $true } catch { $readable = $false }
     Say "ACL $exe" $(if ($readable) { 'readable by you' } else { 'NOT readable by you' })
-    if (-not $readable) { Problem "You cannot read $exe. Run install_helper.ps1 as Administrator to reset the permissions (Users: Read & Execute)." }
+    if (-not $readable) { Problem "You cannot read $exe. Reinstall with DriverInstaller-Setup.exe, which resets the permissions (Users: Read & Execute)." }
     if ($text -notmatch 'BUILTIN\\Users:(\(I\))?\((RX|F|M)\)') {
         Problem "BUILTIN\Users has no Read & Execute entry on $exe. ACL: $text"
     }
@@ -117,14 +117,14 @@ $wdac = Get-ChildItem 'C:\Windows\System32\CodeIntegrity\CiPolicies\Active' -Err
 Say 'App Control (WDAC)' ("{0} active policy file(s)" -f @($wdac).Count)
 
 # 8. try it
-$cli = Join-Path $Path 'driver-installer.exe'
+$cli = Join-Path $Path 'DriverInstaller.exe'
 if (Test-Path -LiteralPath $cli) {
     try {
         $p = Start-Process -FilePath $cli -ArgumentList '--version' -NoNewWindow -Wait -PassThru -RedirectStandardOutput "$env:TEMP\di-version.txt" -ErrorAction Stop
-        Say 'Start test' ("driver-installer.exe --version exited {0}: {1}" -f $p.ExitCode, ((Get-Content "$env:TEMP\di-version.txt" -ErrorAction SilentlyContinue) -join ' '))
-        if ($p.ExitCode -ne 0) { Problem "driver-installer.exe started but exited with $($p.ExitCode)." }
+        Say 'Start test' ("DriverInstaller.exe --version exited {0}: {1}" -f $p.ExitCode, ((Get-Content "$env:TEMP\di-version.txt" -ErrorAction SilentlyContinue) -join ' '))
+        if ($p.ExitCode -ne 0) { Problem "DriverInstaller.exe started but exited with $($p.ExitCode)." }
     } catch {
-        Problem ("Windows refused to start driver-installer.exe: {0} (0x{1:X8})" -f $_.Exception.Message, $_.Exception.HResult)
+        Problem ("Windows refused to start DriverInstaller.exe: {0} (0x{1:X8})" -f $_.Exception.Message, $_.Exception.HResult)
     }
 }
 

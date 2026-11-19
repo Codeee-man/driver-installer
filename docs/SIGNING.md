@@ -20,7 +20,7 @@ driver-installer check
 ```
 py tools\keygen.py --out "$env:USERPROFILE\safedriver-signing.key" --pin
 py tools\sign_manifest.py --key "$env:USERPROFILE\safedriver-signing.key" manifest.json
-powershell -ExecutionPolicy Bypass -File tools\install_helper.ps1     # elevated prompt
+powershell -ExecutionPolicy Bypass -File tools\install_helper.ps1     # elevated prompt; from a checkout
 ```
 
 ## Rules
@@ -38,7 +38,7 @@ powershell -ExecutionPolicy Bypass -File tools\install_helper.ps1     # elevated
 # Windows code signing (Authenticode)
 
 The manifest key above protects *what gets installed*. Authenticode is separate: it signs
-`driver-installer.exe`, `driver-installer-gui.exe` and `driver-installer-helper.exe`, so
+`DriverInstaller.exe` and `DriverInstaller-Setup.exe` (and the uninstaller inside it), so
 Windows (UAC, SmartScreen, Smart App Control) can show who published them and detect tampering.
 
 The build workflow signs automatically when two repository secrets exist
@@ -50,13 +50,18 @@ The build workflow signs automatically when two repository secrets exist
 | `WINDOWS_PFX_PASSWORD` | the `.pfx` password |
 
 `tools/build_windows.py` then runs `signtool sign /fd SHA256 /tr http://timestamp.digicert.com
-/td SHA256` on the three programs right after PyInstaller, before `BUILD-INFO.txt`, the zip and
-`SHA256SUMS` are made, so every published hash is of the signed files. The decoded `.pfx` exists
-only in a private temporary folder during that call and is overwritten and deleted afterwards,
-also on failure. The CI job then checks each signature in the zip with `Get-AuthenticodeSignature`
-(must be `Valid`, our certificate, timestamped) and `signtool verify` (SHA-256 digest), and the
-release notes name the signer and thumbprint. Without the secrets (forks, local builds) the build
-prints a notice and stays unsigned; with only one of them set, it fails.
+/td SHA256` on `DriverInstaller.exe` right after PyInstaller, before `BUILD-INFO.txt` and
+`DriverInstaller-Windows-Portable.zip` are made. Inno Setup then packs that signed program and
+calls `tools/codesign_windows.py` (its `SignTool`) to sign the uninstaller and
+`DriverInstaller-Setup.exe` itself while compiling; the build reads the Setup signature back
+before anything is hashed, so `SHA256SUMS` describes signed files. The decoded `.pfx` exists
+only in a private temporary folder during each signtool call and is overwritten and deleted
+afterwards, also on failure. The CI job checks `DriverInstaller.exe` from the unzipped portable
+archive and `DriverInstaller-Setup.exe` with `Get-AuthenticodeSignature` (must be `Valid`, our
+certificate, timestamped) and `signtool verify` (SHA-256 digest), checks the installed program
+and uninstaller again, and the release notes name the signer and thumbprint. Without the secrets
+(forks, local builds) the build prints a notice and stays unsigned; with only one of them set, it
+fails.
 
 ## Getting the PFX secret
 
@@ -82,7 +87,8 @@ the certificate from `Cert:\CurrentUser\My`, or keep it offline. On Linux:
 `base64 -w0 signing.pfx`.
 
 To sign a local build by hand: set the two environment variables and run
-`py tools\build_windows.py`, or `py tools\codesign_windows.py <file.exe>...`.
+`py tools\build_windows.py`, or `py tools\codesign_windows.py <file.exe>...` (which fails
+instead of leaving a file unsigned when the variables are missing).
 
 ## Trusting a self-signed certificate locally
 
@@ -95,7 +101,7 @@ one in the release notes and in `BUILD-INFO.txt`.
 # elevated PowerShell:
 Import-Certificate -FilePath .\driver-installer.cer -CertStoreLocation Cert:\LocalMachine\Root
 Import-Certificate -FilePath .\driver-installer.cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher
-Get-AuthenticodeSignature .\driver-installer-gui.exe      # Status: Valid
+Get-AuthenticodeSignature .\DriverInstaller-Setup.exe      # Status: Valid
 ```
 
 A trusted root can vouch for any program and any website, so only do this for a certificate you

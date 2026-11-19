@@ -102,7 +102,7 @@ def test_certificate_details(pfx_b64):
 
 # ------------------------------------------------------------- what it runs
 def test_signs_all_files_with_sha256_and_a_timestamp_then_wipes_the_pfx(pfx_b64, tmp_path, capsys):
-    files = [tmp_path / f"{n}.exe" for n in ("driver-installer", "driver-installer-gui", "driver-installer-helper")]
+    files = [tmp_path / "DriverInstaller.exe", tmp_path / "DriverInstaller-Setup.exe"]
     runner = FakeSigntool()
     env = {"WINDOWS_PFX_BASE64": base64.b64encode(make_pfx(b"s3cret-pw")).decode(), "WINDOWS_PFX_PASSWORD": "s3cret-pw"}
     result = cs.sign_executables(files, env=env, runner=runner, signtool=Path("signtool.exe"), readback=False)
@@ -111,7 +111,7 @@ def test_signs_all_files_with_sha256_and_a_timestamp_then_wipes_the_pfx(pfx_b64,
     joined = " ".join(cmd)
     assert cmd[:2] == ["signtool.exe", "sign"]
     assert "/fd SHA256 /tr http://timestamp.digicert.com /td SHA256" in joined
-    assert cmd[-3:] == [str(f) for f in files]
+    assert cmd[-len(files):] == [str(f) for f in files]
     pfx, existed = runner.pfx_seen[0]
     assert existed and not pfx.exists() and not pfx.parent.exists()
     assert "s3cret-pw" not in capsys.readouterr().out          # redacted in the echoed command
@@ -176,18 +176,77 @@ def test_build_signs_before_hashing_and_zipping(tmp_path, monkeypatch):
     order = []
 
     def fake_run(cmd, **kw):
-        app = Path(cmd[cmd.index("--distpath") + 1]) / "driver-installer"
+        app = Path(cmd[cmd.index("--distpath") + 1]) / "DriverInstaller"
         app.mkdir(parents=True)
         order.append("pyinstaller")
 
     monkeypatch.setattr(bw, "run", fake_run)
     monkeypatch.setattr(bw, "icon_file", lambda work: None)
     monkeypatch.setattr(bw, "sign", lambda app: order.append("sign") or bw.codesign_windows.SigningResult(False, reason="test"))
-    monkeypatch.setattr(bw, "verify", lambda app, v: order.append("hash") or {"driver-installer.exe": "ab" * 32})
-    target = bw.build("1.2.3", tmp_path / "out", tmp_path / "work")
-    assert order == ["pyinstaller", "sign", "hash"] and target.is_file()
-    info = (tmp_path / "work" / "dist" / "driver-installer" / "BUILD-INFO.txt").read_text()
-    assert "Authenticode: not signed (test)" in info
+    monkeypatch.setattr(bw, "verify", lambda app, v: order.append("hash") or {"DriverInstaller.exe": "ab" * 32})
+    monkeypatch.setattr(bw, "write_zip", lambda app, target: (order.append("zip"), target.write_bytes(b"PK"), target)[2])
+    monkeypatch.setattr(bw, "build_setup", lambda *a: order.append("setup") or None)
+    (target,) = bw.build("1.2.3", tmp_path / "out", tmp_path / "work")
+    assert order == ["pyinstaller", "sign", "hash", "zip", "setup"] and target.name == bw.ZIP_NAME
+    info = (tmp_path / "work" / "dist" / "DriverInstaller" / "BUILD-INFO.txt").read_text()
+    assert "Authenticode: not signed (test)" in info and "DriverInstaller.exe" in info
+
+
+def test_setup_is_compiled_from_the_signed_folder_and_signed_by_inno_setup(tmp_path, monkeypatch, pfx_b64):
+    bw = load("build_windows")
+    iscc = tmp_path / "ISCC.exe"
+    iscc.write_bytes(b"MZ")
+    out = tmp_path / "dist"
+    out.mkdir()
+    ran, verified = [], []
+    monkeypatch.setattr(bw.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("ISCC", str(iscc))
+    monkeypatch.setenv("WINDOWS_PFX_BASE64", pfx_b64)
+    monkeypatch.setenv("WINDOWS_PFX_PASSWORD", "pw")
+    monkeypatch.setattr(bw, "run", lambda cmd, **kw: ran.append(cmd) or (out / bw.SETUP_NAME).write_bytes(b"MZ"))
+    monkeypatch.setattr(bw.codesign_windows, "verify_signed", lambda files: verified.extend(files))
+    target = bw.build_setup(tmp_path / "app", "1.2.3", out, tmp_path / "work", None, "auto")
+    (cmd,) = ran
+    assert cmd[0] == str(iscc) and cmd[-1] == str(bw.ISS)
+    assert "/DAppVersion=1.2.3" in cmd and "/DNumericVersion=1.2.3.0" in cmd and f"/DSourceDir={tmp_path / 'app'}" in cmd
+    assert "/DSign" in cmd
+    sign_opt = next(c for c in cmd if c.startswith("/Sdisign="))
+    assert "codesign_windows.py$q $f" in sign_opt                 # Inno calls our signer for Setup + uninstaller
+    assert verified == [target]                                    # and the result is read back
+    shim = (tmp_path / "work" / "setup" / "driver-installer.cmd").read_bytes()
+    assert b'"%~dp0DriverInstaller.exe" %*\r\n' in shim and b"exit /b %ERRORLEVEL%" in shim
+
+
+def test_setup_without_secrets_is_unsigned_and_missing_iscc_is_handled(tmp_path, monkeypatch):
+    bw = load("build_windows")
+    monkeypatch.delenv("WINDOWS_PFX_BASE64", raising=False)
+    monkeypatch.delenv("WINDOWS_PFX_PASSWORD", raising=False)
+    cmd = bw.iscc_command(Path("ISCC.exe"), "2.0.0+gitabc", Path("app"), Path("s.cmd"), Path("out"), None, False)
+    assert "/DSign" not in cmd and not any(c.startswith("/S") for c in cmd) and "/DNumericVersion=2.0.0.0" in cmd
+    monkeypatch.setattr(bw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(bw, "find_iscc", lambda env=None: None)
+    assert bw.build_setup(tmp_path, "1.0", tmp_path, tmp_path, None, "auto") is None
+    with pytest.raises(BuildError, match="iscc"):
+        bw.build_setup(tmp_path, "1.0", tmp_path, tmp_path, None, "yes")
+    assert bw.build_setup(tmp_path, "1.0", tmp_path, tmp_path, None, "no") is None
+
+
+def test_signing_cli_refuses_to_report_success_without_secrets(monkeypatch, capsys):
+    monkeypatch.delenv("WINDOWS_PFX_BASE64", raising=False)
+    monkeypatch.delenv("WINDOWS_PFX_PASSWORD", raising=False)
+    assert cs.main(["Setup.exe"]) == 1 and "not set" in capsys.readouterr().err
+    assert cs.main([]) == 64
+
+
+def test_portable_layout_check(tmp_path, monkeypatch):
+    bw = load("build_windows")
+    monkeypatch.setattr(bw.platform, "system", lambda: "Windows")
+    for name in ("DriverInstaller.exe", "_internal", "BUILD-INFO.txt"):
+        (tmp_path / name).mkdir()
+    bw.check_layout(tmp_path)
+    (tmp_path / "install_helper.ps1").write_text("")
+    with pytest.raises(BuildError, match="install_helper.ps1"):
+        bw.check_layout(tmp_path)
 
 
 def test_signing_secrets_off_windows_fail_instead_of_silently_skipping(monkeypatch, tmp_path):
@@ -208,5 +267,12 @@ def test_workflow_passes_the_secrets_and_verifies_signatures():
     assert "WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}" in text
     assert "Get-AuthenticodeSignature" in text and "signtool verify /pa" in text
     # verification runs on the unzipped release, before the install test and the upload
-    assert text.index("Build driver-installer-windows.zip") < text.index("Verify the Authenticode") \
-        < text.index("Install into Program Files") < text.index("upload-artifact")
+    assert text.index("Build DriverInstaller-Windows-Portable.zip and DriverInstaller-Setup.exe") \
+        < text.index("Verify the Authenticode") < text.index("Install with DriverInstaller-Setup.exe") \
+        < text.index("upload-artifact")
+    verify = text[text.index("Verify the Authenticode"):text.index("Install with DriverInstaller-Setup.exe")]
+    assert "smoke/DriverInstaller/DriverInstaller.exe" in verify and "dist/DriverInstaller-Setup.exe" in verify
+    release = text[text.index("  release:"):]
+    for name in ("DriverInstaller-Setup.exe", "DriverInstaller-Windows-Portable.zip"):
+        assert name in release
+    assert "$SIGNER" in release and "$THUMBPRINT" in release and "driver-installer-windows.zip" not in text

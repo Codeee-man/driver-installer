@@ -402,7 +402,7 @@ def test_theme_toggle_switches_in_place_and_is_remembered(window):
     app.processEvents()
     t = theme.current()
     assert t.name == "clean" and win.btn_theme.text() == "[ CLEAN ]" and win.btn_rescan.text() == "Rescan"
-    assert t.colors["GREEN"].lower() in badge_colours(win, ups["full"])       # delegates repainted, no restart
+    assert t.badges["full"][0].lower() in badge_colours(win, ups["full"])     # delegates repainted, no restart
     assert "#00ff66" not in badge_colours(win, ups["full"])
     assert theme.family() != "VT323" and "VT323" not in QApplication_instance().styleSheet()
     assert win.view.verticalHeader().defaultSectionSize() == t.row_height
@@ -432,14 +432,27 @@ def test_open_popover_is_closed_on_theme_change(window):
     assert win.popover is None
 
 
-def test_clean_theme_follows_system_light_or_dark():
-    assert theme.resolve("clean", light=True) is theme.CLEAN_LIGHT_THEME
-    assert theme.resolve("clean", light=False) is theme.CLEAN_DARK_THEME
-    assert theme.resolve("matrix", light=True) is theme.MATRIX_THEME
-    light = theme.set_current("clean", light=True)
+def test_clean_theme_is_metallic_monochrome():
+    assert theme.resolve("clean") is theme.CLEAN_THEME and theme.resolve("matrix") is theme.MATRIX_THEME
+    t = theme.set_current("clean")
     try:
-        assert theme.BG == light.colors["BG"] and theme.BADGES["full"][0] == light.colors["GREEN"]
-        assert "#f4f5f7" in theme.stylesheet().lower()
+        c = t.colors
+        assert (c["BG"], c["SURFACE"], c["BORDER"], c["BORDER_HOVER"]) == ("#0D0F12", "#15181E", "#2B313C", "#4A5364")
+        assert (c["TEXT"], c["MUTED"], c["SLATE"]) == ("#F4F6F9", "#8C95A4", "#565E6B")
+        sheet = theme.stylesheet()
+        # gradient header, brushed-platinum primary button with dark bold text and a top highlight
+        assert "stop:0 #1D2129, stop:1 #14171D" in sheet
+        primary = sheet[sheet.rindex("QPushButton#primary {"):]
+        assert "stop:0 #E8ECF2, stop:1 #C2C9D4" in primary and "color: #0D0F12" in primary
+        assert "font-weight: 700" in primary and "border-top: 1px solid #FFFFFF" in primary
+        assert "Segoe UI" in t.fonts and "VT323" not in sheet
+        b = t.badges
+        assert b["accent"][0] == "#E4E8EF" and b["accent"][4] == "#232832"          # TO UPDATE
+        assert b["uptodate"][0] == "#565E6B"                                       # UP TO DATE
+        assert b["full"][:2] == ("#F4F6F9", "#F4F6F9") and b["full"][5] == "check"  # FULL, outlined, tick
+        assert b["partial"][1] == "#C8B99A" and c["AMBER"] == "#C8B99A"            # PARTIAL and its (?)
+        assert b["none"][0] == "#D47A7A"                                           # NONE
+        assert theme.badge_text("To update") == "TO UPDATE"
     finally:
         theme.set_current("matrix")
     with pytest.raises(ValueError):

@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
-"""Build the Windows release: dist/driver-installer-windows.zip.
+"""Build the Windows release: DriverInstaller-Windows-Portable.zip and DriverInstaller-Setup.exe.
 
-    py tools\\build_windows.py [--version 1.2.3] [--out dist]
+    py tools\\build_windows.py [--version 1.2.3] [--out dist] [--setup auto|yes|no]
 
 Runs PyInstaller on packaging/windows/driver-installer.spec against a staged copy of src/
-(version stamped in), then lays out:
+(version stamped in). The portable folder holds exactly:
 
-    driver-installer/
-      driver-installer.exe          CLI (console)
-      driver-installer-gui.exe      GUI (no console window)
-      driver-installer-helper.exe   elevated helper, no Qt
-      _internal/...                 Python runtime, PySide6, ui/assets/fonts/VT323-Regular.ttf
-      install_helper.ps1            copies this folder to Program Files with an admin-only ACL
-      README.md, LICENSE, SIGNING.md, TESTING_WINDOWS.md, VT323-OFL.txt, manifest.schema.json,
-      example.manifest.json, BUILD-INFO.txt (version, commit, SHA-256 of each .exe)
+    DriverInstaller/
+      DriverInstaller.exe     GUI (double-click), CLI (any arguments), elevated helper (--apply-plan)
+      _internal/...           Python runtime, PySide6, the VT323 font, licenses/ (LICENSE, VT323-OFL.txt)
+      BUILD-INFO.txt          version, commit, SHA-256 of DriverInstaller.exe, signature
 
-Requires: Python 3.10+, `pip install pyinstaller PySide6 cryptography`. The spec also runs on
-Linux (producing Linux binaries), which is how the layout is checked without Windows.
+Then Inno Setup (packaging/windows/DriverInstaller.iss) packs the same folder into
+DriverInstaller-Setup.exe, which installs to C:\\Program Files\\Driver Installer with an
+admin-only ACL and can put a `driver-installer` command on PATH. --setup auto (the default)
+builds it when iscc.exe is found; yes requires it; no skips it.
 
-Code signing: with WINDOWS_PFX_BASE64 and WINDOWS_PFX_PASSWORD set, the three .exe files are
-Authenticode-signed with signtool (SHA-256, RFC 3161 timestamp) right after PyInstaller, before
-they are hashed and zipped. Without them the build is unsigned. See tools/codesign_windows.py
-and docs/SIGNING.md.
+Code signing: with WINDOWS_PFX_BASE64 and WINDOWS_PFX_PASSWORD set, DriverInstaller.exe is
+Authenticode-signed (signtool, SHA-256, RFC 3161 timestamp) right after PyInstaller, before
+it is hashed and zipped; Inno Setup signs Setup.exe and its uninstaller through the same
+tools/codesign_windows.py while compiling, and the result is read back. Without the secrets
+everything is unsigned. See docs/SIGNING.md.
+
+Requires: Python 3.10+, `pip install pyinstaller PySide6 cryptography`, Inno Setup 6 for the
+installer. The spec also runs on Linux (producing a Linux binary), which is how the layout is
+checked without Windows.
 """
 from __future__ import annotations
 
@@ -41,19 +44,18 @@ from build_common import (FONT, FONT_LICENSE, ROOT, BuildError, resolve_version,
 import codesign_windows  # noqa: E402
 
 SPEC = ROOT / "packaging" / "windows" / "driver-installer.spec"
-ZIP_NAME = "driver-installer-windows.zip"
-PROGRAMS = ("driver-installer", "driver-installer-gui", "driver-installer-helper")
-EXTRA_FILES = {
-    "install_helper.ps1": ROOT / "tools" / "install_helper.ps1",
-    "diagnose_windows.ps1": ROOT / "tools" / "diagnose_windows.ps1",
-    "README.md": ROOT / "README.md",
-    "LICENSE": ROOT / "LICENSE",
-    "SIGNING.md": ROOT / "docs" / "SIGNING.md",
-    "TESTING_WINDOWS.md": ROOT / "TESTING_WINDOWS.md",
-    "VT323-OFL.txt": FONT_LICENSE,
-    "manifest.schema.json": ROOT / "schema" / "manifest.schema.json",
-    "example.manifest.json": ROOT / "schema" / "example.manifest.json",
-}
+ISS = ROOT / "packaging" / "windows" / "DriverInstaller.iss"
+PROGRAM = "DriverInstaller"
+ZIP_NAME = "DriverInstaller-Windows-Portable.zip"
+SETUP_NAME = "DriverInstaller-Setup.exe"
+# The portable folder contains these and nothing else.
+PORTABLE_TOP_LEVEL = {"DriverInstaller.exe", "_internal", "BUILD-INFO.txt"}
+LICENSES = ("LICENSE", FONT_LICENSE.name)       # under _internal/licenses/
+SHIM = ('@echo off\r\n'
+        'rem Driver Installer command line. DriverInstaller.exe is a windowed program; started\r\n'
+        'rem from this script, cmd.exe waits for it and passes its exit code on.\r\n'
+        '"%~dp0DriverInstaller.exe" %*\r\n'
+        'exit /b %ERRORLEVEL%\r\n')
 
 
 def numeric_version(version: str) -> tuple[int, int, int, int]:
@@ -65,8 +67,8 @@ def numeric_version(version: str) -> tuple[int, int, int, int]:
 def version_resource(version: str, path: Path) -> Path:
     n = numeric_version(version)
     strings = {"CompanyName": "Driver Installer project", "FileDescription": "Driver Installer",
-               "FileVersion": version, "InternalName": "driver-installer", "LegalCopyright": "MIT License",
-               "OriginalFilename": "driver-installer.exe", "ProductName": "Driver Installer", "ProductVersion": version}
+               "FileVersion": version, "InternalName": PROGRAM, "LegalCopyright": "MIT License",
+               "OriginalFilename": f"{PROGRAM}.exe", "ProductName": "Driver Installer", "ProductVersion": version}
     entries = ",\n            ".join(f"StringStruct({k!r}, {v!r})" for k, v in strings.items())
     path.write_text(f"""# UTF-8
 VSVersionInfo(
@@ -97,14 +99,16 @@ def icon_file(work: Path) -> Path | None:
 
 
 def check_pe_metadata(exe: Path, version: str) -> None:
-    """Windows only: the manifest asks for no elevation (asInvoker) and the version resource is set.
-    Uses `pefile` when installed (the build workflow installs it)."""
+    """Windows only: windowed (GUI subsystem, so no console flash), the manifest asks for no
+    elevation (asInvoker), and the version resource is set. Uses `pefile`."""
     try:
         import pefile
     except ImportError:
         print("note: pefile not installed; manifest and version resource not checked", file=sys.stderr)
         return
     pe = pefile.PE(str(exe))
+    if pe.OPTIONAL_HEADER.Subsystem != pefile.SUBSYSTEM_TYPE["IMAGE_SUBSYSTEM_WINDOWS_GUI"]:
+        raise BuildError(f"{exe.name}: not a windowed (GUI subsystem) program")
     manifests = []
     resources = pe.DIRECTORY_ENTRY_RESOURCE.entries if hasattr(pe, "DIRECTORY_ENTRY_RESOURCE") else []
     for entry in resources:
@@ -123,46 +127,119 @@ def check_pe_metadata(exe: Path, version: str) -> None:
         raise BuildError(f"{exe.name}: version resource is {strings!r}")
 
 
+def exe_path(app_dir: Path) -> Path:
+    return app_dir / (PROGRAM + (".exe" if platform.system() == "Windows" else ""))
+
+
+def check_layout(app_dir: Path) -> None:
+    """Nothing but the program, its runtime and BUILD-INFO.txt at the top of the portable folder."""
+    names = {p.name for p in app_dir.iterdir()}
+    if platform.system() != "Windows":
+        names = {n + ".exe" if n == PROGRAM else n for n in names}
+    extra = names - PORTABLE_TOP_LEVEL
+    if extra:
+        raise BuildError(f"unexpected files in the portable folder: {sorted(extra)}")
+
+
 def verify(app_dir: Path, version: str) -> dict[str, str]:
-    suffix = ".exe" if platform.system() == "Windows" else ""
-    hashes = {}
-    for name in PROGRAMS:
-        exe = app_dir / (name + suffix)
-        if not exe.is_file():
-            raise BuildError(f"{exe.name} was not built")
-        hashes[exe.name] = sha256_file(exe)
-        if platform.system() == "Windows":
-            check_pe_metadata(exe, version)
+    """The folder as it will ship. Returns {name: sha256} of the program."""
+    exe = exe_path(app_dir)
+    if not exe.is_file():
+        raise BuildError(f"{exe.name} was not built")
+    if platform.system() == "Windows":
+        check_pe_metadata(exe, version)
+    check_layout(app_dir)
     fonts = list(app_dir.rglob(FONT.name))
     if not fonts or sha256_file(fonts[0]) != sha256_file(FONT):
         raise BuildError(f"{FONT.name} is missing from the bundle or differs from the source")
-    for name in EXTRA_FILES:
-        if not (app_dir / name).is_file():
-            raise BuildError(f"{name} is missing from the distribution folder")
-    cli = app_dir / ("driver-installer" + suffix)
-    out = subprocess.run([str(cli), "--version"], capture_output=True, text=True, timeout=120)
+    for name in LICENSES:
+        if not (app_dir / "_internal" / "licenses" / name).is_file():
+            raise BuildError(f"_internal/licenses/{name} is missing")
+    # Captured output = redirected handles: what a script or the .cmd shim sees.
+    out = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=120)
     if version not in out.stdout:
-        raise BuildError(f"driver-installer --version printed {out.stdout!r}{out.stderr!r}, expected {version}")
-    helper = subprocess.run([str(app_dir / ("driver-installer-helper" + suffix)), "--bogus"], timeout=120)
+        raise BuildError(f"{exe.name} --version printed {out.stdout!r}{out.stderr!r}, expected {version}")
+    helper = subprocess.run([str(exe), "--apply-plan"], capture_output=True, timeout=120)
     if helper.returncode != 64:
-        raise BuildError(f"the helper should refuse unknown arguments with exit code 64, got {helper.returncode}")
-    return hashes
+        raise BuildError(f"helper mode should refuse an incomplete command line with exit code 64, got {helper.returncode}")
+    return {exe.name: sha256_file(exe)}
 
 
 def sign(app_dir: Path) -> codesign_windows.SigningResult:
-    """Sign the three programs when the signing secrets are set (Windows only: signtool)."""
+    """Sign DriverInstaller.exe when the signing secrets are set (Windows only: signtool)."""
     if platform.system() != "Windows":
         if codesign_windows.secrets() is not None:
             raise BuildError("code signing needs signtool.exe, which exists only on Windows")
         return codesign_windows.SigningResult(False, reason="not built on Windows")
-    return codesign_windows.sign_executables([app_dir / f"{name}.exe" for name in PROGRAMS])
+    return codesign_windows.sign_executables([exe_path(app_dir)])
 
 
-def build(version: str, out: Path, work: Path) -> Path:
+def find_iscc(env=None) -> Path | None:
+    env = os.environ if env is None else env
+    if env.get("ISCC"):
+        return Path(env["ISCC"]) if Path(env["ISCC"]).is_file() else None
+    found = shutil.which("iscc", path=env.get("PATH"))
+    if found:
+        return Path(found)
+    for base in (env.get("ProgramFiles(x86)") or r"C:\Program Files (x86)", env.get("ProgramFiles") or r"C:\Program Files"):
+        candidate = Path(base) / "Inno Setup 6" / "ISCC.exe"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def iscc_command(iscc: Path, version: str, app_dir: Path, shim: Path, out: Path, icon: Path | None,
+                 signing: bool) -> list[str]:
+    n = ".".join(map(str, numeric_version(version)))
+    cmd = [str(iscc), "/Qp", f"/DAppVersion={version}", f"/DNumericVersion={n}",
+           f"/DSourceDir={app_dir}", f"/DShimFile={shim}", f"/DOutputDir={out}"]
+    if icon:
+        cmd.append(f"/DIconFile={icon}")
+    if signing:
+        cmd += ["/DSign", codesign_windows.iscc_signtool()]
+    return cmd + [str(ISS)]
+
+
+def build_setup(app_dir: Path, version: str, out: Path, work: Path, icon: Path | None, mode: str) -> Path | None:
+    """Compile DriverInstaller-Setup.exe from the finished (signed) portable folder."""
+    if mode == "no":
+        return None
+    iscc = find_iscc() if platform.system() == "Windows" else None
+    if iscc is None:
+        if mode == "yes":
+            raise BuildError("Inno Setup's iscc.exe was not found (install Inno Setup 6 or set ISCC)")
+        codesign_windows.notice(f"iscc.exe not found; {SETUP_NAME} not built (portable zip only).")
+        return None
+    shim = work / "setup" / "driver-installer.cmd"
+    shim.parent.mkdir(parents=True, exist_ok=True)
+    shim.write_bytes(SHIM.encode("ascii"))
+    cert = codesign_windows.configured()
+    target = out / SETUP_NAME
+    target.unlink(missing_ok=True)
+    run(iscc_command(iscc, version, app_dir, shim, out, icon, cert is not None))
+    if not target.is_file():
+        raise BuildError(f"iscc finished but {target} is missing")
+    if cert is not None:
+        codesign_windows.verify_signed([target])        # signed while compiling; read it back
+    print(f"built {target} ({target.stat().st_size // (1 << 20)} MiB, sha256 {sha256_file(target)})")
+    return target
+
+
+def write_zip(app_dir: Path, target: Path) -> Path:
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for path in sorted(app_dir.rglob("*")):
+            if path.is_file():
+                zf.write(path, Path(PROGRAM) / path.relative_to(app_dir))
+    print(f"built {target} ({target.stat().st_size // (1 << 20)} MiB, sha256 {sha256_file(target)})")
+    return target
+
+
+def build(version: str, out: Path, work: Path, setup: str = "auto") -> list[Path]:
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True)
     src = stage_source(work / "src", version)
+    shutil.copy2(ROOT / "LICENSE", src / "LICENSE")             # bundled under _internal/licenses
     warn_if_unpinned(src)
     env = {**os.environ, "DI_STAGED_SRC": str(src), "DI_VERSION_FILE": str(version_resource(version, work / "version.txt"))}
     icon = icon_file(work)
@@ -171,10 +248,7 @@ def build(version: str, out: Path, work: Path) -> Path:
     dist = work / "dist"
     run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--distpath", dist,
          "--workpath", work / "pyinstaller", str(SPEC)], env=env)
-    app_dir = dist / "driver-installer"
-    for name, source in EXTRA_FILES.items():
-        if source.is_file():
-            shutil.copy2(source, app_dir / name)
+    app_dir = dist / PROGRAM
     signing = sign(app_dir)
     hashes = verify(app_dir, version)              # hashes of the files as shipped, i.e. after signing
     commit = os.environ.get("GITHUB_SHA") or subprocess.run(
@@ -183,14 +257,11 @@ def build(version: str, out: Path, work: Path) -> Path:
         f"Driver Installer {version}\ncommit {commit or 'unknown'}\nbuilt {dt.datetime.now(dt.timezone.utc):%Y-%m-%d %H:%M UTC} "
         f"on {platform.system()} {platform.machine()}, Python {platform.python_version()}\n\nSHA-256\n"
         + "".join(f"  {h}  {n}\n" for n, h in hashes.items()) + "\n" + signing.build_info(), encoding="utf-8")
+    out = out.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    target = out / ZIP_NAME
-    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        for path in sorted(app_dir.rglob("*")):
-            if path.is_file():
-                zf.write(path, Path("driver-installer") / path.relative_to(app_dir))
-    print(f"built {target} ({target.stat().st_size // (1 << 20)} MiB, sha256 {sha256_file(target)})")
-    return target
+    built = [write_zip(app_dir, out / ZIP_NAME)]
+    installer = build_setup(app_dir, version, out, work, icon, setup)
+    return built + ([installer] if installer else [])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -198,9 +269,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--version", help="release version (default: from the v* tag, else <version>+git<sha>)")
     ap.add_argument("--out", type=Path, default=ROOT / "dist")
     ap.add_argument("--work", type=Path, default=ROOT / "build" / "windows")
+    ap.add_argument("--setup", choices=("auto", "yes", "no"), default="auto",
+                    help=f"build {SETUP_NAME} with Inno Setup (default: when iscc.exe is found)")
     args = ap.parse_args(argv)
     try:
-        build(resolve_version(args.version), args.out, args.work)
+        build(resolve_version(args.version), args.out, args.work, args.setup)
     except (BuildError, subprocess.CalledProcessError, OSError) as exc:
         print(f"build_windows: {exc}", file=sys.stderr)
         return 1

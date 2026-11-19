@@ -298,23 +298,35 @@ def test_install_script_grants_exactly_admins_system_full_and_users_read_execute
     assert "/inheritance:r" in PS1 and "Everyone" not in PS1 and "S-1-1-0" not in PS1
 
 
-def test_install_script_unblocks_resets_and_verifies_in_both_modes():
-    release = PS1[PS1.index("# ---- Release folder"):PS1.index("# ---- Source checkout")]
+def test_install_script_unblocks_resets_and_verifies():
     source = PS1[PS1.index("# ---- Source checkout"):]
-    for part in (release, source):
-        assert "Remove-DownloadMark $dest" in part and "Reset-ChildAcls $dest" in part and "Assert-UsersCanRun" in part
-    assert release.index("Remove-DownloadMark $PSScriptRoot") < release.index("Copy-Item")
+    assert "Release folder" not in PS1                      # releases use DriverInstaller-Setup.exe
+    assert "Set-AdminOnlyAcl $dest" in source and "Remove-DownloadMark $dest" in source
+    assert "Reset-ChildAcls $dest" in source and "Assert-UsersCanRun" in source
     assert "Get-ChildItem -LiteralPath $path -Recurse -File -Force | Unblock-File" in PS1
     assert "icacls (Join-Path $path '*') /reset /T /C /Q" in PS1
+
+
+def test_setup_script_locks_down_the_folder_and_offers_the_path_task():
+    iss = (ROOT / "packaging" / "windows" / "DriverInstaller.iss").read_text()
+    assert r"DefaultDirName={autopf}\Driver Installer" in iss and "PrivilegesRequired=admin" in iss
+    assert "/inheritance:r /grant:r *S-1-5-32-544:(OI)(CI)F *S-1-5-18:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX" in iss
+    assert r'\*" /reset /T /C /Q' in iss and "Unblock-File" in iss and "RaiseException" in iss
+    assert 'Description: "Add CLI command (driver-installer) to system PATH"' in iss and "Flags: unchecked" in iss
+    assert '{olddata};{app}' in iss and "RemoveFromPath" in iss and "usPostUninstall" in iss
+    assert r'Name: "{autoprograms}\Driver Installer"; Filename: "{app}\DriverInstaller.exe"' in iss
+    assert "runasoriginaluser" in iss                       # "Start" after setup is not elevated
+    assert "SignTool=disign" in iss and "SignedUninstaller=yes" in iss
 
 
 def test_spec_stays_one_folder_and_as_invoker():
     spec = (ROOT / "packaging" / "windows" / "driver-installer.spec").read_text()
     assert "exclude_binaries=True" in spec and "COLLECT(" in spec and "onefile" not in spec.lower().replace("one-file", "")
     assert "uac_admin=False" in spec and "version=VERSION_FILE" in spec
+    assert spec.count("EXE(") == 1 and "console=False" in spec and 'NAME = "DriverInstaller"' in spec
 
 
-def test_diagnostic_script_covers_the_known_causes_and_ships_in_the_zip():
+def test_diagnostic_script_covers_the_known_causes_and_stays_out_of_the_zip():
     script = (ROOT / "tools" / "diagnose_windows.ps1").read_text()
     for needle in ("VerifiedAndReputablePolicyState", "Get-MpThreatDetection", "Zone.Identifier", "icacls",
                    "Get-AppLockerPolicy", "--version", ".zip"):
@@ -325,7 +337,8 @@ def test_diagnostic_script_covers_the_known_causes_and_ships_in_the_zip():
     sys.path.insert(0, str(ROOT / "tools"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert "diagnose_windows.ps1" in module.EXTRA_FILES
+    assert module.PORTABLE_TOP_LEVEL == {"DriverInstaller.exe", "_internal", "BUILD-INFO.txt"}
+    assert "DriverInstaller.exe" in script and "driver-installer-gui.exe" not in script
 
 
 # Products strings exactly as the live catalog showed them (Windows runner, 2026-11-18).

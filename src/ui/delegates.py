@@ -7,7 +7,7 @@ repaint.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QModelIndex, QPoint, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate, QToolTip
 
@@ -17,6 +17,13 @@ from .models import BadgeRole, HelpRole, MutedRole, SubtitleRole
 PAD_X = 12
 BADGE_H = 20
 HELP_D = 16
+ICON_W = 12                     # tick drawn before the text of badges whose theme asks for one
+
+
+def badge_style(kind: str) -> tuple:
+    """(text colour, border, fill alpha, glow, explicit fill or None, icon or None)."""
+    style = tuple(theme.BADGES.get(kind, theme.BADGES["busy"]))
+    return style + (None,) * (6 - len(style))
 
 
 def _color(hex_value: str, alpha: int = 255) -> QColor:
@@ -74,17 +81,18 @@ class BadgeDelegate(_Base):
     @staticmethod
     def badge_font():
         t = theme.current()
-        return theme.font(8, bold=True, spacing=t.letter_spacing or None, mono=t.uppercase)
+        return theme.font(8, bold=True, spacing=t.letter_spacing or None, mono=t.name == theme.MATRIX)
 
     @classmethod
-    def badge_rect(cls, cell: QRect, text: str) -> QRect:
+    def badge_rect(cls, cell: QRect, text: str, kind: str | None = None) -> QRect:
         fm = QFontMetrics(cls.badge_font())
-        width = fm.horizontalAdvance(theme.badge_text(text)) + 18
+        icon = kind is not None and badge_style(kind)[5] == "check"
+        width = fm.horizontalAdvance(theme.badge_text(text)) + 18 + (ICON_W + 4 if icon else 0)
         return QRect(cell.left() + PAD_X, cell.center().y() - BADGE_H // 2 + 1, width, BADGE_H)
 
     @classmethod
-    def help_rect(cls, cell: QRect, text: str) -> QRect:
-        badge = cls.badge_rect(cell, text)
+    def help_rect(cls, cell: QRect, text: str, kind: str | None = None) -> QRect:
+        badge = cls.badge_rect(cell, text, kind)
         return QRect(badge.right() + 8, cell.center().y() - HELP_D // 2 + 1, HELP_D, HELP_D)
 
     def paint(self, painter, option, index):
@@ -99,21 +107,30 @@ class BadgeDelegate(_Base):
             painter.restore()
             return
         text, kind = badge
-        fg, border, fill_alpha, glow = theme.BADGES.get(kind, theme.BADGES["busy"])
-        rect = QRectF(self.badge_rect(option.rect, text))
+        fg, border, fill_alpha, glow, fill, icon = badge_style(kind)
+        rect = QRectF(self.badge_rect(option.rect, text, kind))
         radius = min(theme.current().badge_radius, rect.height() / 2)
         if glow:
             painter.setPen(QPen(_color(fg, 45), 3))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(rect.adjusted(-1, -1, 1, 1), radius + 1, radius + 1)
         painter.setPen(QPen(_color(border), 1))
-        painter.setBrush(_color(fg, fill_alpha) if fill_alpha else Qt.NoBrush)
+        painter.setBrush(_color(fill) if fill else (_color(fg, fill_alpha) if fill_alpha else Qt.NoBrush))
         painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        text_rect = rect
+        if icon == "check":
+            x, y = rect.left() + 9, rect.center().y()
+            pen = QPen(_color(fg), 1.6)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            painter.drawPolyline([QPointF(x, y), QPointF(x + 3.5, y + 3.5), QPointF(x + ICON_W - 2, y - 4)])
+            text_rect = rect.adjusted(ICON_W + 4, 0, 0, 0)
         painter.setFont(self.badge_font())
         painter.setPen(_color(fg))
-        painter.drawText(rect, Qt.AlignCenter, theme.badge_text(text))
+        painter.drawText(text_rect, Qt.AlignCenter, theme.badge_text(text))
         if index.data(HelpRole):
-            help_rect = QRectF(self.help_rect(option.rect, text))
+            help_rect = QRectF(self.help_rect(option.rect, text, kind))
             hovered = bool(option.state & QStyle.State_MouseOver)
             painter.setPen(QPen(_color(theme.AMBER if hovered else theme.AMBER_BORDER), 1))
             painter.setBrush(_color(theme.AMBER, 30 if hovered else 0))
@@ -126,11 +143,11 @@ class BadgeDelegate(_Base):
     def editorEvent(self, event, model, option, index):
         if (event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton
                 and index.data(HelpRole)):
-            text = index.data(BadgeRole)[0]
-            target = self.help_rect(option.rect, text).adjusted(-4, -4, 4, 4)
+            text, kind = index.data(BadgeRole)
+            target = self.help_rect(option.rect, text, kind).adjusted(-4, -4, 4, 4)
             if target.contains(event.position().toPoint()):
                 widget = option.widget
-                anchor = self.help_rect(option.rect, text).bottomLeft() + QPoint(0, 6)
+                anchor = self.help_rect(option.rect, text, kind).bottomLeft() + QPoint(0, 6)
                 self.helpRequested.emit(index, widget.mapToGlobal(anchor) if widget else anchor)
                 return True
         return super().editorEvent(event, model, option, index)

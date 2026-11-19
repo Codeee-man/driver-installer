@@ -75,7 +75,7 @@ py src\cli.py verify-log
 
 | Check | Expected |
 |---|---|
-| UAC prompt | Appears once, for `helper.exe` in Program Files (or `python.exe` plus a warning if the helper is not installed) |
+| UAC prompt | Appears once, for `DriverInstaller.exe` in Program Files (installed with Setup), `helper.exe` (installed from a checkout), or the portable/`python.exe` copy plus a warning |
 | Restore point | `Get-ComputerRestorePoint` shows "Pre-Driver-Installer Update" |
 | Result | `installed`, or `no-op ... already up to date` for the re-install test |
 | `pnputil /enum-drivers` | Driver package present |
@@ -95,7 +95,8 @@ Discovery was verified live on a Windows runner (catalog search, details, downlo
 LOLDrivers, Microsoft signature). On a real PC, run:
 
 ```powershell
-.\driver-installer.exe check --debug       # every step, to the console
+driver-installer check --debug                    # installed with the PATH option: every step, to the console
+start /wait .\DriverInstaller.exe check --debug   # portable folder, from cmd.exe
 ```
 or open the window and press LOG. The trace shows, in order:
 
@@ -112,16 +113,19 @@ Windows Update keeps current. Send the `--debug` output if the reasons look wron
 
 ## 4c. "Windows cannot access the specified device, path, or file"
 
-Run, from the unzipped folder (normal user first, then as Administrator):
+Download `tools\diagnose_windows.ps1` from the repository (it is no longer inside the zip) and run
+it, normal user first, then as Administrator:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\diagnose_windows.ps1
+powershell -ExecutionPolicy Bypass -File .\diagnose_windows.ps1 -Path "$env:USERPROFILE\Downloads\DriverInstaller"
+powershell -ExecutionPolicy Bypass -File .\diagnose_windows.ps1        # the installed copy in Program Files
 ```
 It checks, without changing anything: starting from inside the .zip, missing files,
-Defender detections, Smart App Control, the download mark (Zone.Identifier), folder
-permissions, AppLocker/App Control, and whether `driver-installer.exe` starts. Installing with
-`install_helper.ps1` (as Administrator) removes the download mark and sets Users to Read &
-Execute; the build workflow checks that a standard user can then start both programs.
+Defender detections, Smart App Control, the code signature, the download mark
+(Zone.Identifier), folder permissions, AppLocker/App Control, and whether `DriverInstaller.exe`
+starts. `DriverInstaller-Setup.exe` installs without a download mark and with Users set to
+Read & Execute; the build workflow installs it and checks that a standard user can run the
+CLI and the GUI but cannot write into the folder.
 
 ## 5. A real upgrade
 

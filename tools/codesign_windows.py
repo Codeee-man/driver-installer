@@ -262,10 +262,45 @@ def sign_executables(files: list[Path], env=None, runner=subprocess.run, signtoo
     return SigningResult(True, cert=cert)
 
 
-if __name__ == "__main__":                       # sign files by hand: py tools\codesign_windows.py a.exe b.exe
+def configured(env=None) -> SigningCert | None:
+    """The signing certificate when both secrets are set (validated), else None."""
+    creds = secrets(env)
+    return inspect_pfx(decode_pfx(creds[0]), creds[1]) if creds else None
+
+
+def iscc_signtool(python: str = sys.executable, script: Path | None = None) -> str:
+    """The /S option that makes Inno Setup sign Setup.exe and its uninstaller through this
+    script (so the same secrets, checks and PFX wiping apply). $q is a quote, $f the file."""
+    script = script or Path(__file__).resolve()
+    return f"/Sdisign=$q{python}$q $q{script}$q $f"
+
+
+def verify_signed(files: list[Path], runner=subprocess.run) -> SigningCert:
+    """For files signed elsewhere (Inno Setup's compile step): same read-back as after signing."""
+    cert = configured()
+    if cert is None:
+        raise BuildError("verify_signed needs the signing secrets")
+    check_signatures(files, cert, runner)
+    return cert
+
+
+def main(argv: list[str]) -> int:
+    """py tools\\codesign_windows.py FILE...: sign files with the configured certificate.
+    Also Inno Setup's SignTool command. Without the secrets this fails: a caller that asks for a
+    signature must not get an unsigned file and exit code 0."""
+    if not argv:
+        print("usage: codesign_windows.py FILE.exe [FILE.exe ...]", file=sys.stderr)
+        return 64
     try:
-        result = sign_executables([Path(a) for a in sys.argv[1:]])
+        if secrets() is None:
+            raise BuildError(f"{PFX_ENV} and {PASSWORD_ENV} are not set")
+        result = sign_executables([Path(a) for a in argv])
     except BuildError as exc:
         print(f"codesign_windows: {exc}", file=sys.stderr)
-        sys.exit(1)
+        return 1
     print(result.build_info(), end="")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -24,17 +24,24 @@ results, and why each result was skipped. Every Windows driver package is checke
 LOLDrivers list of known vulnerable drivers before install.
 
 Releases: push a tag like `v1.0.0` and `.github/workflows/build.yml` tests on Windows and Linux,
-then attaches `driver-installer-windows.zip`, a `.deb` and an `.AppImage` (plus `SHA256SUMS`) to a
-published release. Build locally with `python tools/build_linux.py all` or `py tools\build_windows.py`.
-On Windows, unzip and run `install_helper.ps1` from an elevated PowerShell to install into
-Program Files. The Windows executables are Authenticode-signed when the repository has the
-`WINDOWS_PFX_BASE64`/`WINDOWS_PFX_PASSWORD` secrets (see `docs/SIGNING.md`); otherwise unsigned.
+then attaches `DriverInstaller-Setup.exe`, `DriverInstaller-Windows-Portable.zip`, a `.deb` and an
+`.AppImage` (plus `SHA256SUMS`) to a published release. Build locally with
+`python tools/build_linux.py all` or `py tools\build_windows.py` (the installer needs Inno Setup 6).
+
+On Windows there is one program, `DriverInstaller.exe`: double-click it for the window; give it
+arguments (`DriverInstaller.exe scan --json > scan.json`) for the CLI; it elevates itself for
+installs. `DriverInstaller-Setup.exe` installs it to `C:\Program Files\Driver Installer`, locked so
+only administrators can change it, with an optional `driver-installer` command on PATH. Because
+the program is windowed, an interactive `cmd` prompt does not wait for it; use the
+`driver-installer` command, `start /wait DriverInstaller.exe ...`, or redirect the output.
+Both are Authenticode-signed when the repository has the `WINDOWS_PFX_BASE64`/`WINDOWS_PFX_PASSWORD`
+secrets (see `docs/SIGNING.md`); otherwise unsigned.
 
 Before real use:
 
 1. Pin a signing key and sign your manifest: `tools/pin_key.sh`, see `docs/SIGNING.md`.
 2. Install the protected helper: `sudo tools/install_helper.sh [--with-timer]`
-   (Windows: `tools\install_helper.ps1` from an elevated PowerShell). Without it the
+   (Windows: `DriverInstaller-Setup.exe`; from a checkout, `tools\install_helper.ps1`). Without it the
    tool still works but warns, because it elevates code your user account can edit.
 3. Optional weekly check: `systemctl --user enable --now driver-installer.timer`.
 
