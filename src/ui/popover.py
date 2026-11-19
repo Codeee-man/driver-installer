@@ -39,7 +39,14 @@ class ChecksPopover(QFrame):
         title.setObjectName("popoverTitle")
         title.setStyleSheet(f"color: {_level_color(lvl)};")
         outer.addWidget(title)
-        if vf.missing(update):
+        failed = [c for c in update.checks if c.state == FAILED]
+        if failed:
+            hint = QLabel("Failed: " + "; ".join(f"{c.label}: {c.reason}" for c in failed))
+            hint.setObjectName("checkReason")
+            hint.setWordWrap(True)
+            hint.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            outer.addWidget(hint)
+        elif vf.missing(update):
             hint = QLabel("Not done: " + ", ".join(c.label for c in vf.missing(update)))
             hint.setObjectName("checkReason")
             hint.setWordWrap(True)

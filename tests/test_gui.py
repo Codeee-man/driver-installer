@@ -115,9 +115,9 @@ def test_only_full_and_partial_rows_can_be_selected(window):
 
 
 # --------------------------------------------------------------- (?) help
-def test_help_target_only_on_partial(window):
+def test_help_target_on_partial_and_none(window):
     _, win, ups = window
-    for key, has_help in (("full", False), ("partial", True), ("none", False)):
+    for key, has_help in (("full", False), ("partial", True), ("none", True)):
         assert bool(win.model.index(row_of(win, ups[key]), COL_VERIFY).data(HelpRole)) is has_help
 
 

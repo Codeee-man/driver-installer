@@ -34,7 +34,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from build_common import BuildError
+from build_common import BuildError, find_windows_tool, powershell
 
 PFX_ENV = "WINDOWS_PFX_BASE64"
 PASSWORD_ENV = "WINDOWS_PFX_PASSWORD"
@@ -126,24 +126,10 @@ def _sdk_version(path: Path) -> tuple[int, ...]:
 
 
 def find_signtool(env=None, arch: str | None = None) -> Path:
-    """SIGNTOOL, then PATH, then the newest Windows 10/11 SDK under Program Files (x86)."""
-    env = os.environ if env is None else env
-    if env.get("SIGNTOOL"):
-        path = Path(env["SIGNTOOL"])
-        if not path.is_file():
-            raise BuildError(f"SIGNTOOL={path} does not exist")
-        return path
-    on_path = shutil.which("signtool", path=env.get("PATH"))
-    if on_path:
-        return Path(on_path)
+    """SIGNTOOL, then PATH, then the newest Windows 10/11 SDK under Program Files."""
     arch = arch or ("arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64")
-    candidates = []
-    for base in {env.get("ProgramFiles(x86)") or r"C:\Program Files (x86)", env.get("ProgramFiles")}:
-        if not base:
-            continue
-        kits = Path(base) / "Windows Kits" / "10" / "bin"
-        candidates += [p for p in kits.glob(f"*/{arch}/signtool.exe") if p.is_file()]
-        candidates += [p for p in [kits / arch / "signtool.exe"] if p.is_file()]
+    candidates = find_windows_tool("signtool", "SIGNTOOL", (f"Windows Kits/10/bin/*/{arch}/signtool.exe",
+                                                            f"Windows Kits/10/bin/{arch}/signtool.exe"), env)
     if not candidates:
         raise BuildError("signtool.exe not found: install the Windows SDK (Signing Tools) or set SIGNTOOL")
     return max(candidates, key=_sdk_version)
@@ -209,12 +195,7 @@ def check_signatures(files: list[Path], cert: SigningCert, runner=subprocess.run
     timestamped, and the file hash matches. A self-signed certificate is not trusted on the
     build machine, so for it 'UnknownError' (untrusted root) is accepted here; the build
     workflow trusts it on the throwaway runner and then requires 'Valid'."""
-    env = {**os.environ, "DI_SIGNED_FILES": json.dumps([str(f) for f in files])}
-    for key in [k for k in env if k.upper() == "PSMODULEPATH"]:   # PowerShell 7's path breaks 5.1's modules
-        del env[key]
-    encoded = base64.b64encode(READBACK.encode("utf-16-le")).decode()
-    res = runner(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-                 capture_output=True, text=True, timeout=300, env=env)
+    res = powershell(READBACK, {**os.environ, "DI_SIGNED_FILES": json.dumps([str(f) for f in files])}, runner)
     if res.returncode != 0:
         raise BuildError(f"Get-AuthenticodeSignature failed: {res.stderr.strip()}")
     rows = json.loads(res.stdout)

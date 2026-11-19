@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core import common, engine, manifest, verifier  # noqa: E402
 from core.common import (EXIT_ELEVATION, EXIT_FAILED, EXIT_NOT_CONFIRMED, EXIT_OK, EXIT_REFUSED,  # noqa: E402,F401
-                         EXIT_SNAPSHOT, ElevationError, InstallError, VerificationError)
+                         ElevationError, InstallError, VerificationError)
 
 CHECK_UP_TO_DATE, CHECK_UPDATES_AVAILABLE, CHECK_REFUSED, CHECK_ERROR = 0, 1, 2, 3
 _LEGACY = {"--scan": ["scan"], "--update-all": ["update", "--all"], "--gui": ["gui"], "--verify-log": ["verify-log"]}

@@ -87,14 +87,17 @@ real hardware as a test: use a VM or a machine you can re-image.
 - `core/security/loldrivers.py`: every `.sys` is checked against the live LOLDrivers feed,
   by the front end after download and again by the helper before the restore point.
   A hit aborts the whole plan. An unreachable feed stops the install until the user agrees.
-- Neither has run against the live catalog or the live feed: tests use loopback mock servers.
+- Tests use loopback mock servers; catalog discovery and download were also checked against the live
+  catalog from a Windows runner.
 
 ## Known gaps
 
-- Un-installed, the helper is `python src/helper_main.py` in your checkout, which your
-  own account can modify; the tool warns each time. `tools/install_helper.sh` /
-  `.ps1` install it to a root/Administrators-only path, and the core then prefers it.
-  The Windows helper.exe is unsigned until you sign it.
+- Un-installed, the helper is `python src/helper_main.py` in your checkout (or a portable
+  `DriverInstaller.exe`), which your own account can modify; the tool warns each time.
+  `DriverInstaller-Setup.exe`, the .deb and `tools/install_helper.sh` / `.ps1` install it to an
+  administrators-only path, and the core then prefers it. Windows builds are Authenticode-signed
+  only when the repository has the signing secrets (docs/SIGNING.md).
 - fwupd is driven through `fwupdmgr`, not D-Bus.
-- No Windows CI yet; several tests assume POSIX file modes.
+- Windows Update drivers that the public catalog cannot serve are fetched through the Windows
+  Update Agent; that path is tested with a stand-in for the agent, not yet on physical hardware.
 - `expand.exe` output is not re-checked for path traversal (zip extraction is).

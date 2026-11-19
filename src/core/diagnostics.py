@@ -52,6 +52,23 @@ def describe(rec: dict) -> list[str]:
     if event == "discovery.windows":
         return [f"discovery: Windows Update {data.get('windows_update')}, catalog {data.get('catalog')}, "
                 f"{data.get('chosen')} update(s) after taking the newest per device"]
+    if event == "verify.failed":
+        step = data.get("step")
+        return [f"{data.get('update')} ({data.get('source')}): verification FAILED"
+                + (f" at {step}" if step else ""), f"  {data.get('reason')}"]
+    if event == "verify.channel_trust":
+        return [f"{data.get('update')}: Partial, trusted through the Windows Update channel until the installer "
+                f"downloads it", f"  catalog: {data.get('catalog')}", f"  Windows Update Agent: {data.get('wua')}"]
+    if event == "catalog.redirect":
+        return [f"download dialog for {data.get('update')} answered {data.get('code')} -> {data.get('location')}"]
+    if event == "catalog.download_unavailable":
+        return [f"no catalog download for {data.get('update')}: {data.get('reason')}"]
+    if event == "wua.fetch.failed":
+        return [f"Windows Update Agent could not hand over {data.get('update')} ({data.get('stage')} step, "
+                f"{data.get('hresult') or 'no HRESULT'}): {data.get('error')}"]
+    if event == "wua.fetch.done":
+        return [f"Windows Update Agent handed over {data.get('file')} ({data.get('size')} bytes"
+                + (", already downloaded by Windows" if data.get("already_downloaded") else "") + ")"]
     return [json.dumps(data, default=str, ensure_ascii=False)[:400]]
 
 

@@ -6,7 +6,7 @@ a dry-run default.
 
 ```
 pip install cryptography PySide6 pytest
-python -m pytest -q                                  # 278 tests, no admin rights or internet needed
+python -m pytest -q                                  # 370 tests, no admin rights or internet needed
 
 python src/cli.py scan                               # hardware vs. manifest (table, or --json)
 python src/cli.py check --notify                     # exit 0 up to date, 1 updates, 2+ error
@@ -23,8 +23,9 @@ driver tool. `--debug` (or LOG in the window) shows every step: devices scanned,
 results, and why each result was skipped. Every Windows driver package is checked against the
 LOLDrivers list of known vulnerable drivers before install.
 
-Releases: push a tag like `v1.0.0` and `.github/workflows/build.yml` tests on Windows and Linux,
-then attaches `DriverInstaller-Setup.exe`, `DriverInstaller-Windows-Portable.zip`, a `.deb` and an
+Releases: push a tag `vMAJOR.MINOR.PATCH` (the current line is `v1.1.x`; the next is `v1.1.2`) and
+`.github/workflows/build.yml` tests on Windows and Linux, installs the Windows build as a standard
+user, then attaches `DriverInstaller-Setup.exe`, `DriverInstaller-Windows-Portable.zip`, a `.deb` and an
 `.AppImage` (plus `SHA256SUMS`) to a published release. Build locally with
 `python tools/build_linux.py all` or `py tools\build_windows.py` (the installer needs Inno Setup 6).
 
@@ -45,17 +46,40 @@ Before real use:
    tool still works but warns, because it elevates code your user account can edit.
 3. Optional weekly check: `systemctl --user enable --now driver-installer.timer`.
 
+Windows Update drivers that the public catalog cannot serve (its download dialog answers
+`302 -> ErrorInline.aspx`, common for OEM drivers) are fetched through the Windows Update Agent.
+If Windows lets only administrators download them, they show **Partial** with the reason, and the
+installer downloads them as administrator and runs every check before installing. Every failed
+check shows its real reason in the `(?)` next to the badge and in LOG.
+
 Layout:
 
-- `src/core/` - engine: scanner, verifier, restore points, installer, elevation
-- `src/core/discovery/` - Microsoft Update Catalog, fwupd/LVFS and distro driver discovery
-- `src/core/security/` - LOLDrivers (BYOVD) blocklist check
-- `src/cli.py`, `src/ui/` - front ends (never elevated); `src/helper_main.py` - the elevated helper
-- `schema/` - manifest schema 1.1 and an example
-- `tools/` - `install_helper.sh|.ps1`, `pin_key.sh`, `keygen.py`, `sign_manifest.py`
-- `contrib/` - systemd user units, polkit policy
-- `tests/` - pytest suite with recorded WMI fixtures
-- `docs/` - `ARCHITECTURE.md`, `PHASE2.md`, `SIGNING.md`; `TESTING_WINDOWS.md` at the top level
-- `poc/` - Phase 1 single-file proof of concept, superseded by `src/`
+```
+src/
+  cli.py, ui/                 front ends (never elevated); gui.py, demo.py
+  windows_main.py             DriverInstaller.exe: GUI, CLI and --apply-plan helper in one program
+  helper_main.py              the elevated helper (--apply-plan <plan.json> only)
+  core/
+    engine.py                 scan -> discover -> download + verify -> plan -> helper
+    scanner_win.py, scanner_linux.py   hardware inventory (WMI, lspci/lsusb, fwupd)
+    discovery/                Windows Update Agent, Microsoft Update Catalog, LVFS/distro tools
+    verifier.py               HTTPS fetches, SHA-256 gated downloads, Authenticode, GPG
+    security/loldrivers.py    LOLDrivers (BYOVD) blocklist
+    installer.py              unpack, pnputil / fwupd / package manager
+    elevation.py              which helper to elevate, UAC / pkexec / sudo
+    restore.py, manifest.py, trust.py, model.py, common.py, diagnostics.py
+packaging/windows/            PyInstaller spec, Inno Setup script (DriverInstaller-Setup.exe)
+tools/
+  build_windows.py, build_linux.py, build_common.py   release builds (zip + Setup.exe, .deb + AppImage)
+  codesign_windows.py         Authenticode signing with signtool (docs/SIGNING.md)
+  diagnose_windows.ps1        why Windows refuses to start the program (read-only)
+  install_helper.sh|.ps1      protected helper from a source checkout
+  pin_key.sh, keygen.py, sign_manifest.py, builder.py   manifest keys and signing
+schema/                       manifest schema 1.1 and an example
+contrib/                      systemd user units, polkit policy, desktop file, icons
+docs/                         ARCHITECTURE.md, PHASE2.md, SIGNING.md, TESTING_WINDOWS.md
+tests/                        pytest suite with recorded WMI fixtures and loopback HTTP servers
+.github/workflows/            ci.yml (tests on push), build.yml (release builds on v* tags)
+```
 
 The Matrix theme uses the bundled VT323 font (SIL Open Font License, `src/ui/assets/fonts/VT323-OFL.txt`).

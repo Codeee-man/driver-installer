@@ -10,11 +10,19 @@ needs no administrator rights. The search honours the machine's update policy (W
 drivers from quality updates"), and that policy is recorded with the results, because it is the
 most common reason for an empty list.
 
-Trust: what WUA reports is only a pointer. Each update is fetched as its .cab, from a Microsoft
-download host, and goes through the same checks as catalog drivers: published digest,
-LOLDrivers, and a .cat signed by Microsoft's hardware publisher (enforced again by the elevated
-helper). Windows Update and the Microsoft Update Catalog share update IDs, so the catalog's
-download dialog supplies the file's digest; the URL WUA reports is used if the catalog has none.
+Trust: what WUA reports is only a pointer. Each update is fetched as its .cab and goes
+through the same checks as catalog drivers: digest, LOLDrivers, and a .cat signed by
+Microsoft's hardware publisher (enforced again by the elevated helper). Where the .cab comes
+from, in order:
+
+  1. the Microsoft Update Catalog (same update IDs; its download dialog also gives a digest)
+  2. the download URL WUA reported, if any
+  3. the Windows Update Agent itself (fetch_package): IUpdateDownloader, then
+     IUpdate2.CopyFromCache. Many OEM drivers exist only here: the public catalog answers
+     302 -> ErrorInline.aspx for them. WUA checks every file against Microsoft-signed update
+     metadata while downloading. Windows may refuse this to a standard user
+     (WU_E_PER_MACHINE_UPDATE_ACCESS_DENIED); then the elevated helper does it before installing.
+
 The COM search was verified on a real Windows runner (it returned no drivers there: a virtual
 machine with Windows Update blocked by policy); results on physical hardware are untested.
 """
@@ -22,6 +30,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 from .. import common, trust
 from ..model import Device, is_newer, normalise_windows_id
@@ -62,7 +71,70 @@ RESULT_CODES = {0: "not started", 1: "in progress", 2: "succeeded", 3: "succeede
 
 
 class WindowsUpdateError(Exception):
-    """The Windows Update Agent could not be queried."""
+    """The Windows Update Agent could not be queried, or would not hand over an update."""
+
+    def __init__(self, message: str, hresult: str = "", stage: str = ""):
+        super().__init__(message)
+        self.hresult, self.stage = hresult.upper().replace("0X", "0x"), stage
+
+    @property
+    def needs_admin(self) -> bool:
+        return self.hresult in ADMIN_ONLY
+
+
+# HRESULTs that mean "an administrator could do this": the elevated helper retries then.
+ADMIN_ONLY = {"0x80240044": "only administrators can download this update (WU_E_PER_MACHINE_UPDATE_ACCESS_DENIED)",
+              "0x80070005": "access denied (E_ACCESSDENIED)"}
+KNOWN_HRESULTS = {**ADMIN_ONLY,
+                  "0x8024402C": "Windows Update could not reach its servers (WU_E_PT_WINHTTP_NAME_NOT_RESOLVED)",
+                  "0x80240438": "no route to the Windows Update service (WU_E_PT_ENDPOINT_UNREACHABLE)",
+                  "0x8024001E": "the Windows Update service is shutting down or was stopped (WU_E_SERVICE_STOP)",
+                  "0x80240022": "every update in the download failed (WU_E_ALL_UPDATES_FAILED)",
+                  "0x80246007": "Windows Update has no downloaded copy to hand over (WU_E_DM_NOTDOWNLOADED)"}
+
+FETCH_TIMEOUT = 1800               # a large GPU driver over a slow link
+_FETCH_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$out = [ordered]@{ files = @(); error = $null; hresult = $null; stage = 'search'; downloaded = $false }
+try {
+  $session = New-Object -ComObject Microsoft.Update.Session
+  $session.ClientApplicationID = 'driver-installer'
+  $found = $session.CreateUpdateSearcher().Search("UpdateID='" + $env:SD_UPDATE_ID + "'")
+  if ($found.Updates.Count -lt 1) { throw 'Windows Update no longer offers this update to this PC' }
+  $u = $found.Updates.Item(0)
+  try { if (-not $u.EulaAccepted) { $u.AcceptEula() } } catch { }
+  $out.downloaded = [bool]$u.IsDownloaded
+  if (-not $u.IsDownloaded) {
+    $out.stage = 'download'
+    $todo = New-Object -ComObject Microsoft.Update.UpdateColl
+    [void]$todo.Add($u)
+    $downloader = $session.CreateUpdateDownloader()
+    $downloader.Updates = $todo
+    $result = $downloader.Download()
+    if ($result.ResultCode -notin 2, 3) {
+      $hr = $result.GetUpdateResult(0).HResult
+      $out.hresult = '0x{0:X8}' -f $hr
+      throw ("the download ended with result {0}" -f $result.ResultCode)
+    }
+    $out.downloaded = $true
+    # The object from before the download still says "not downloaded": look it up again,
+    # or CopyFromCache fails with WU_E_DM_NOTDOWNLOADED.
+    $again = $session.CreateUpdateSearcher().Search("UpdateID='" + $env:SD_UPDATE_ID + "'")
+    if ($again.Updates.Count -gt 0) { $u = $again.Updates.Item(0) }
+  }
+  $out.stage = 'copy'
+  $parts = @($u)
+  if ($u.BundledUpdates.Count -gt 0) { $parts = @($u.BundledUpdates | ForEach-Object { $_ }) }
+  foreach ($part in $parts) { $part.CopyFromCache($env:SD_DEST, $false) }
+  $out.files = @(Get-ChildItem -LiteralPath $env:SD_DEST -Recurse -File |
+                 ForEach-Object { [ordered]@{ path = $_.FullName; size = $_.Length } })
+} catch {
+  $out.error = $_.Exception.Message
+  if (-not $out.hresult) { $out.hresult = '0x{0:X8}' -f $_.Exception.HResult }
+}
+$out | ConvertTo-Json -Depth 4 -Compress
+"""
 
 
 def title_version(title: str) -> str:
@@ -102,6 +174,52 @@ def search() -> dict:
     updates = data.get("updates") or []
     data["updates"] = updates if isinstance(updates, list) else [updates]
     return data
+
+
+def explain_hresult(hresult: str) -> str:
+    return KNOWN_HRESULTS.get(hresult.upper().replace("0X", "0x"), "")
+
+
+def fetch_package(update_id: str, dest_dir: Path, max_size: int) -> Path:
+    """Have the Windows Update Agent download one update and copy its .cab out of the WUA
+    cache into dest_dir (empty, private). Returns the .cab. WUA checks the file against
+    Microsoft-signed update metadata; the caller still hashes it, unpacks it, runs LOLDrivers
+    and checks the catalog signature. Raises WindowsUpdateError (needs_admin tells whether an
+    administrator could succeed where this account could not)."""
+    if not _GUID.match(update_id or ""):
+        raise WindowsUpdateError("malformed update id")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    common.audit("wua.fetch.start", update=update_id)
+    res = common.powershell(_FETCH_SCRIPT, env={"SD_UPDATE_ID": update_id, "SD_DEST": str(dest_dir)},
+                            timeout=FETCH_TIMEOUT)
+    if res is None:
+        raise WindowsUpdateError("Windows PowerShell is not available")
+    try:
+        data = json.loads(res.stdout) if res.stdout.strip() else None
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        raise WindowsUpdateError(common.clean_powershell_error(res.stderr) or f"PowerShell exited with {res.rc}")
+    if data.get("error"):
+        hresult, stage = str(data.get("hresult") or ""), str(data.get("stage") or "")
+        known = explain_hresult(hresult)
+        message = f"Windows Update Agent {stage} step failed: {data['error']}" + (f" [{hresult}]" if hresult else "")
+        if known:
+            message += f": {known}"
+        common.audit("wua.fetch.failed", update=update_id, stage=stage, hresult=hresult, error=str(data["error"]))
+        raise WindowsUpdateError(message, hresult, stage)
+    files = data.get("files") or []
+    files = files if isinstance(files, list) else [files]
+    cabs = [Path(f["path"]) for f in files if isinstance(f, dict) and str(f.get("path", "")).lower().endswith(".cab")]
+    cabs = [c for c in cabs if c.is_file() and dest_dir.resolve() in c.resolve().parents]
+    if not cabs:
+        raise WindowsUpdateError("the Windows Update Agent copied no driver cabinet (.cab) for this update", stage="copy")
+    cab = max(cabs, key=lambda c: c.stat().st_size)
+    if cab.stat().st_size > max_size:
+        raise WindowsUpdateError(f"the update is larger than {max_size} bytes", stage="copy")
+    common.audit("wua.fetch.done", update=update_id, file=cab.name, size=cab.stat().st_size,
+                 already_downloaded=bool(data.get("downloaded")))
+    return cab
 
 
 def _device_index(devices: list[Device]) -> dict[str, Device]:

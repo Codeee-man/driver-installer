@@ -1,7 +1,10 @@
 # Testing on Windows
 
-None of the Windows code has run on real Windows yet. Use a throwaway
-environment; never a machine you need.
+Every release tag runs the whole suite on a Windows runner, builds `DriverInstaller.exe` and
+`DriverInstaller-Setup.exe`, installs them and starts them as a standard user (see
+`.github/workflows/build.yml`). Catalog discovery was also checked live there. What a runner
+cannot show is a real PC: its own drivers, Windows Update offers (blocked by policy on the
+runner) and real installs. For that, use a throwaway environment; never a machine you need.
 
 | Environment | Good for | Not for |
 |---|---|---|
@@ -15,7 +18,7 @@ environment; never a machine you need.
 3. In an ordinary (non-admin) PowerShell, from the checkout:
    ```powershell
    py -m pip install cryptography PySide6 pytest pyinstaller
-   py -m pytest -q        # some tests assume POSIX file modes and may fail on Windows; note which
+   py -m pytest -q        # a few POSIX-only tests are skipped on Windows
    ```
 4. In an **elevated** PowerShell, turn System Restore on and lift the one-per-24h limit:
    ```powershell
@@ -62,7 +65,7 @@ Write a manifest entry (copy the Windows package in `schema\example.manifest.jso
 - `install`: `{"method": "pnputil", "inf_path": "<name>.inf", "reboot_required": false}`
 - `generated` now, `expires` a week ahead
 
-Then pin a key, sign, and install the helper (see `docs\SIGNING.md`).
+Then pin a key, sign, and install the helper (see [SIGNING.md](SIGNING.md)).
 
 ## 4. Run and check
 
@@ -107,13 +110,17 @@ or open the window and press LOG. The trace shows, in order:
 | `catalog.start` | How many devices have a PCI/USB hardware ID to search for |
 | `catalog.device` | Per device: each hardware ID searched (full, then base), how many results, and the reason each was skipped: older than installed, wrong Windows release, wrong architecture, hardware ID not supported |
 | `discovery.windows` | How many updates each source found |
+| `catalog.redirect` | The catalog answered the download dialog with a redirect; `-> ErrorInline.aspx` means it has no public copy of that update (common for OEM drivers Windows Update offers) |
+| `wua.fetch.done` / `wua.fetch.failed` | The Windows Update Agent handed over the driver's .cab, or why not (HRESULT and meaning, e.g. only administrators may download it) |
+| `verify.channel_trust` | Verification is Partial: only an administrator may download the driver, so the installer downloads it through Windows Update and runs every check before installing |
+| `verify.failed` | Verification is None: which step failed and the real reason. The same reasons are in the (?) next to the badge |
 
 "Not newer than the installed driver" for every device is a normal result on a PC that
 Windows Update keeps current. Send the `--debug` output if the reasons look wrong.
 
 ## 4c. "Windows cannot access the specified device, path, or file"
 
-Download `tools\diagnose_windows.ps1` from the repository (it is no longer inside the zip) and run
+Download [`tools/diagnose_windows.ps1`](../tools/diagnose_windows.ps1) from the repository (it is no longer inside the zip) and run
 it, normal user first, then as Administrator:
 
 ```powershell

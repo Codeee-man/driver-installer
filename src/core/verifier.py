@@ -38,7 +38,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _safe_name(filename: str) -> str:
+def safe_name(filename: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", Path(filename).name) or "package.bin"
 
 
@@ -51,11 +51,21 @@ def _check_url(url: str, allow_loopback_http: bool) -> None:
     raise VerificationError(f"refusing non-HTTPS URL: {url}")
 
 
-def _opener(allow_loopback_http: bool) -> urllib.request.OpenerDirector:
+class RedirectError(VerificationError):
+    """A response redirected where the caller asked for none. `location` says where to."""
+
+    def __init__(self, url: str, code: int, location: str):
+        super().__init__(f"{url} answered {code}, redirecting to {location}")
+        self.url, self.code, self.location = url, code, location
+
+
+def _opener(allow_loopback_http: bool, follow_redirects: bool = True) -> urllib.request.OpenerDirector:
     class HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
-            _check_url(newurl, allow_loopback_http)
             common.audit("net.redirect", to=newurl, code=code)
+            if not follow_redirects:
+                raise RedirectError(req.full_url, code, newurl)
+            _check_url(newurl, allow_loopback_http)
             return super().redirect_request(req, fp, code, msg, headers, newurl)
     opener = urllib.request.build_opener(HttpsOnlyRedirects)
     opener.addheaders = [("User-Agent", f"{common.APP}/{common.VERSION}")]  # no identifiers
@@ -83,7 +93,7 @@ def _receive(read, out, expected_sha256: str, expected_size: int, progress=None)
     return actual
 
 
-def _private_dir(path: Path) -> Path:
+def private_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     if os.name != "nt":
         os.chmod(path, 0o700)
@@ -95,7 +105,7 @@ def _gated_write(source_desc: str, opener, dest_dir: Path, expected_sha256: str,
     """Shared by download and staging: write to a temp file, verify, then rename. Purge on any failure."""
     if not SHA256_RE.match(expected_sha256):
         raise VerificationError("manifest sha256 is malformed")
-    _private_dir(dest_dir)
+    private_dir(dest_dir)
     fd, tmp = tempfile.mkstemp(dir=dest_dir, prefix=".partial-")  # 0600, never executable
     try:
         with os.fdopen(fd, "wb") as out, opener() as src:
@@ -109,7 +119,7 @@ def _gated_write(source_desc: str, opener, dest_dir: Path, expected_sha256: str,
         if isinstance(exc, VerificationError):
             raise
         raise VerificationError(f"could not read {source_desc}: {exc}") from exc
-    final = dest_dir / f"{expected_sha256[:16]}-{_safe_name(filename)}"
+    final = dest_dir / f"{expected_sha256[:16]}-{safe_name(filename)}"
     os.replace(tmp, final)
     if os.name != "nt":
         os.chmod(final, 0o400)
@@ -153,16 +163,20 @@ def fetch_small(url: str, dest: Path, *, allow_loopback_http: bool = False, limi
 
 
 def http_fetch(url: str, *, data: bytes | None = None, limit: int = 8 << 20, timeout: int = 30,
-               headers: dict | None = None, allow_loopback_http: bool = False) -> bytes:
+               headers: dict | None = None, allow_loopback_http: bool = False,
+               follow_redirects: bool = True) -> bytes:
     """GET (or POST when `data` is given) into memory. HTTPS only, HTTPS-only redirects,
     hard size cap. Used for the LOLDrivers feed and Microsoft Update Catalog pages; nothing
-    fetched this way is trusted for its content alone."""
+    fetched this way is trusted for its content alone. With follow_redirects=False a 3xx
+    answer raises RedirectError instead of quietly fetching the page it points to."""
     _check_url(url, allow_loopback_http)
     common.audit("net.request", url=url, method="POST" if data is not None else "GET")
     req = urllib.request.Request(url, data=data, headers=headers or {})
     try:
-        with _opener(allow_loopback_http).open(req, timeout=timeout) as resp:
+        with _opener(allow_loopback_http, follow_redirects).open(req, timeout=timeout) as resp:
             body = resp.read(limit + 1)
+    except RedirectError:
+        raise
     except (OSError, ValueError) as exc:
         raise VerificationError(f"could not fetch {url}: {exc}") from exc
     if len(body) > limit:
@@ -192,7 +206,7 @@ def download_from_host(url: str, dest_dir: Path, filename: str, *, host_ok, max_
             return super().redirect_request(req, fp, code, msg, headers, newurl)
 
     check(url)
-    _private_dir(dest_dir)
+    private_dir(dest_dir)
     opener = urllib.request.build_opener(Redirects)
     opener.addheaders = [("User-Agent", f"{common.APP}/{common.VERSION}")]
     common.audit("net.request", url=url, kind="catalog-download", max_size=max_size)
@@ -227,7 +241,7 @@ def download_from_host(url: str, dest_dir: Path, filename: str, *, host_ok, max_
             raise
         raise VerificationError(f"download failed: {exc}") from exc
     digest = sha256.hexdigest()
-    final = dest_dir / f"{digest[:16]}-{_safe_name(filename)}"
+    final = dest_dir / f"{digest[:16]}-{safe_name(filename)}"
     os.replace(tmp, final)
     if os.name != "nt":
         os.chmod(final, 0o400)

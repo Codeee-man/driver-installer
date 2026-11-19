@@ -77,7 +77,7 @@ def test_wrong_hash_is_none_and_later_checks_are_marked_not_reached(win_env, as_
     engine.verify_update(update, ctx)
     assert states(update) == {"sha256": "failed", "manifest": "passed", "blocklist": "skipped", "publisher": "skipped"}
     assert "SHA-256 MISMATCH" in update.check("sha256").reason
-    assert update.check("publisher").reason == "not reached: an earlier step failed"
+    assert update.check("publisher").reason.startswith("not reached: SHA-256 integrity failed (SHA-256 MISMATCH")
     assert vf.level(update) == "None"
 
 

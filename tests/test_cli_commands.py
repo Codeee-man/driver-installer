@@ -10,7 +10,7 @@ import pytest
 import cli
 import demo
 import helper_main
-from core import common, elevation, engine, installer
+from core import common, elevation, engine
 from core.common import ElevationError
 from core.model import Device
 from test_apply_flow import win_env  # noqa: F401  (fixture)
@@ -153,9 +153,9 @@ def test_root_runs_unattended_update_without_any_prompt(linux_box, runner, pin, 
 
 # ------------------------------------------------------------- helper path
 def test_uninstalled_helper_falls_back_to_repo_copy_with_a_warning(tmp_path, linux, caplog):
-    argv = installer.helper_command(tmp_path / "plan.json")
-    assert argv == [sys.executable, "-I", str(installer.REPO_HELPER), "--apply-plan", str(tmp_path / "plan.json")]
-    assert installer.REPO_HELPER.name == "helper_main.py" and installer.REPO_HELPER.is_file()
+    argv = elevation.helper_command(tmp_path / "plan.json")
+    assert argv == [sys.executable, "-I", str(elevation.REPO_HELPER), "--apply-plan", str(tmp_path / "plan.json")]
+    assert elevation.REPO_HELPER.name == "helper_main.py" and elevation.REPO_HELPER.is_file()
     assert "running un-installed" in caplog.text and "tools/install_helper.sh" in caplog.text
     events = [json.loads(line)["event"] for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
     assert "elevation.warning" in events
@@ -165,9 +165,9 @@ def test_installed_helper_is_preferred(tmp_path, linux, monkeypatch, caplog):
     helper = tmp_path / "bin" / "driver-installer-helper"
     helper.parent.mkdir()
     helper.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(installer, "HELPER_LINUX", str(helper))
-    monkeypatch.setattr(installer, "_admin_only", lambda path: True)
-    assert installer.helper_command("/p/plan.json") == [str(helper), "--apply-plan", "/p/plan.json"]
+    monkeypatch.setattr(elevation, "HELPER_LINUX", str(helper))
+    monkeypatch.setattr(elevation, "_admin_only", lambda path: True)
+    assert elevation.helper_command("/p/plan.json") == [str(helper), "--apply-plan", "/p/plan.json"]
     assert "un-installed" not in caplog.text
     assert engine.helper_argv(Path("/p/plan.json"))[0] == str(helper)
 
@@ -177,27 +177,27 @@ def test_installed_helper_that_others_can_modify_is_refused_not_bypassed(tmp_pat
     helper = tmp_path / "driver-installer-helper"
     helper.write_text("#!/bin/sh\n")
     os.chmod(helper, 0o777)
-    monkeypatch.setattr(installer, "HELPER_LINUX", str(helper))
+    monkeypatch.setattr(elevation, "HELPER_LINUX", str(helper))
     with pytest.raises(ElevationError, match="can be modified by non-administrators"):
-        installer.helper_command("/p/plan.json")
+        elevation.helper_command("/p/plan.json")
     os.chmod(helper, 0o755)
     os.chmod(tmp_path, 0o777)                              # safe file in a directory anyone can write
     with pytest.raises(ElevationError):
-        installer.helper_command("/p/plan.json")
+        elevation.helper_command("/p/plan.json")
     os.chmod(tmp_path, 0o755)
     if os.geteuid() == 0:                                   # root-owned and not writable by others: accepted
-        assert installer.installed_helper() == str(helper)
+        assert elevation.installed_helper() == str(helper)
     assert stat.S_IMODE(os.stat(helper).st_mode) == 0o755
 
 
 def test_windows_helper_exe_in_program_files(tmp_path, windows, monkeypatch, caplog):
-    assert installer.helper_command("plan.json")[1:3] == ["-I", str(installer.REPO_HELPER)]
+    assert elevation.helper_command("plan.json")[1:3] == ["-I", str(elevation.REPO_HELPER)]
     assert "DriverInstaller-Setup.exe" in caplog.text
-    monkeypatch.setattr(installer.ntpath, "join", os.path.join)        # POSIX test host
+    monkeypatch.setattr(elevation.ntpath, "join", os.path.join)        # POSIX test host
     exe = tmp_path / "ProgramFiles" / "driver-installer" / "helper.exe"
     exe.parent.mkdir(parents=True)
     exe.write_bytes(b"MZ")
-    assert installer.helper_command("plan.json") == [str(exe), "--apply-plan", "plan.json"]
+    assert elevation.helper_command("plan.json") == [str(exe), "--apply-plan", "plan.json"]
 
 
 # ------------------------------------------------------- helper entry point

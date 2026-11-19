@@ -160,7 +160,7 @@ def deb_tree(src: Path, version: str) -> Tree:
     doc = "/usr/share/doc/driver-installer"
     tree.add(f"{doc}/copyright", copyright_file())
     tree.add(f"{doc}/README.md", (ROOT / "README.md").read_bytes())
-    for extra in ("docs/SIGNING.md", "TESTING_WINDOWS.md", "schema/manifest.schema.json", "schema/example.manifest.json"):
+    for extra in ("docs/SIGNING.md", "schema/manifest.schema.json", "schema/example.manifest.json"):
         tree.add(f"{doc}/{Path(extra).name}", (ROOT / extra).read_bytes())
     changelog = (f"driver-installer ({version}) unstable; urgency=medium\n\n  * Release {version}.\n\n"
                  f" -- {MAINTAINER}  {time.strftime('%a, %d %b %Y %H:%M:%S +0000', time.gmtime(epoch()))}\n")

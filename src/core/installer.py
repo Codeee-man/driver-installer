@@ -7,12 +7,10 @@ of engine.apply(), not of this module.
 from __future__ import annotations
 
 import dataclasses
-import logging
 import ntpath
 import os
 import re
 import stat
-import sys
 import zipfile
 from pathlib import Path
 
@@ -24,87 +22,6 @@ MAX_EXTRACT_BYTES = 4 << 30
 ERROR_SUCCESS_REBOOT_REQUIRED, ERROR_NO_MORE_ITEMS = 3010, 259
 PACKAGE_MANAGERS = ("apt-get", "dnf", "pacman", "zypper")
 _LOCAL_FORMATS = {"apt-get": "deb", "dnf": "rpm", "zypper": "rpm", "pacman": "pkg"}
-
-
-# Where an installed, root/Administrators-only helper may live, in order of preference.
-HELPER_LINUX = "/usr/local/bin/driver-installer-helper"                  # tools/install_helper.sh
-HELPER_LINUX_PACKAGED = "/usr/libexec/driver-installer/driver-installer-helper"   # the .deb package
-# Under %ProgramFiles%: DriverInstaller-Setup.exe, then tools/install_helper.ps1 from a checkout.
-# On Windows the helper is DriverInstaller.exe itself, started with --apply-plan.
-HELPER_WINDOWS = (("Driver Installer", "DriverInstaller.exe"), ("driver-installer", "helper.exe"))
-HELPER_FROZEN_NAME = "driver-installer-helper"                            # next to a Linux PyInstaller build
-REPO_HELPER = Path(__file__).resolve().parents[1] / "helper_main.py"
-log = logging.getLogger("safedriver")
-
-
-def _admin_only(path: str) -> bool:
-    """True if only root can modify `path` (owner root, not group- or world-writable)."""
-    st = os.stat(path)
-    return st.st_uid == 0 and not st.st_mode & 0o022
-
-
-def _program_files() -> str:
-    return os.environ.get("ProgramFiles", r"C:\Program Files")
-
-
-def installed_helper() -> str | None:
-    """The system-installed elevated helper (install_helper.sh / .ps1, or the .deb), or None.
-
-    On Linux the helper and its directory must be writable by root only; a helper that
-    fails this is never used and never silently replaced by another copy."""
-    if common.OS_NAME == "windows":
-        for folder, name in HELPER_WINDOWS:
-            path = ntpath.join(_program_files(), folder, name)
-            if os.path.isfile(path):
-                return path
-        return None
-    for candidate in (HELPER_LINUX, HELPER_LINUX_PACKAGED):
-        if not os.path.isfile(candidate):
-            continue
-        for part in (candidate, os.path.dirname(candidate)):
-            if not _admin_only(part):
-                raise ElevationError(f"{part} can be modified by non-administrators; refusing to elevate it. "
-                                     "Reinstall the package, or run tools/install_helper.sh")
-        return candidate
-    return None
-
-
-def _unprotected_helper() -> tuple[list[str], str]:
-    """(command prefix, description) for a helper that is NOT in a protected location."""
-    if getattr(sys, "frozen", False) and common.OS_NAME == "windows":
-        # DriverInstaller.exe is GUI, CLI and helper in one: it elevates itself (portable copy).
-        return [str(Path(sys.executable).resolve())], str(Path(sys.executable).resolve())
-    if getattr(sys, "frozen", False):                    # Linux PyInstaller build (tests)
-        exe_dir = Path(sys.executable).resolve().parent
-        name = HELPER_FROZEN_NAME + (".exe" if common.OS_NAME == "windows" else "")
-        helper = exe_dir / name
-        if not helper.is_file():
-            raise ElevationError(f"{name} is missing next to {Path(sys.executable).name}; reinstall the application")
-        return [str(helper)], str(helper)
-    appimage = os.environ.get("APPIMAGE")
-    if appimage and os.path.isfile(appimage) and common.OS_NAME == "linux":
-        # The AppImage's own mount is not visible to root, so elevate the AppImage file itself;
-        # its AppRun starts the helper when the first argument is --apply-plan. The runtime flag
-        # avoids needing FUSE as root (pkexec drops APPIMAGE_EXTRACT_AND_RUN from the environment).
-        return [appimage, "--appimage-extract-and-run"], appimage
-    # -I: isolated mode, so the elevated interpreter ignores PYTHON* variables and the user's site dir.
-    return [sys.executable, "-I", str(REPO_HELPER)], str(REPO_HELPER)
-
-
-def helper_command(plan_path) -> list[str]:
-    """Command line of the elevated helper for a plan. Prefers the system-installed helper;
-    otherwise uses the one shipped with this copy of the program, with a warning."""
-    helper = installed_helper()
-    if helper:
-        return [helper, "--apply-plan", str(plan_path)]
-    prefix, where = _unprotected_helper()
-    if common.OS_NAME == "windows":
-        fix = "install it with DriverInstaller-Setup.exe, which puts it in Program Files"
-    else:
-        fix = "install the .deb package or run tools/install_helper.sh"
-    log.warning(f"running un-installed: elevating {where}, which ordinary users may be able to modify; {fix}")
-    common.audit("elevation.warning", reason="helper not installed", helper=where)
-    return [*prefix, "--apply-plan", str(plan_path)]
 
 
 @dataclasses.dataclass
@@ -203,20 +120,32 @@ def _tail(res: common.Result) -> str:
     return " | ".join(lines[-3:])[:400]
 
 
+def unpack_package(path: Path, fmt: str, dest: Path) -> None:
+    """Unpack a driver package into `dest`: .zip with path-traversal and size checks, .cab with
+    Windows' expand.exe. The one unpacker used both before the user decides (engine) and in the
+    elevated helper. Raises InstallError."""
+    if fmt == "zip":
+        try:
+            safe_extract_zip(path, dest)
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise InstallError(f"the driver package could not be unpacked safely: {exc}") from exc
+    elif fmt == "cab":
+        if common.OS_NAME != "windows":
+            raise InstallError("a .cab driver package can only be unpacked on Windows")
+        res = _execute(["expand", "-F:*", str(path), str(dest)])
+        if res.rc != 0:
+            raise InstallError("could not unpack the cabinet: " + _tail(res))
+    else:
+        raise InstallError(f"pnputil needs a .cab or .zip driver package, not .{fmt}")
+
+
 def _prepare_pnputil(pkg: dict, path: Path, workdir: Path, blocklist=None) -> list[str]:
     """Unpack, run the LOLDrivers check on every .sys, check the catalog signer and locate
     the .inf. Changes nothing outside `workdir`. Raises loldrivers.SecurityAlert on a hit."""
     art, inst = pkg["artifact"], pkg["install"]
     extract_dir = Path(workdir) / ("extract-" + re.sub(r"[^a-z0-9]", "_", pkg["id"]))
     extract_dir.mkdir(parents=True, exist_ok=False)
-    if art["format"] == "zip":
-        safe_extract_zip(path, extract_dir)
-    elif art["format"] == "cab":
-        res = _execute(["expand", "-F:*", str(path), str(extract_dir)])
-        if res.rc != 0:
-            raise InstallError("could not unpack the cabinet: " + _tail(res))
-    else:
-        raise InstallError(f"{pkg['id']}: pnputil needs a .cab or .zip driver package, not .{art['format']}")
+    unpack_package(path, art["format"], extract_dir)
     if blocklist is not None:
         loldrivers.check_directory(extract_dir, blocklist)       # BYOVD gate, before anything else
     sig = art["signature"]

@@ -300,7 +300,7 @@ def _metallic(c: dict) -> str:
     """Clean only, after the shared rules (so these win): brushed-steel borders that brighten on
     hover, a gradient header, and the primary action as a brushed-platinum button."""
     plate = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c['PLATINUM_TOP']}, stop:1 {c['PLATINUM_BOTTOM']})"
-    plate_hover = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #F7F9FC, stop:1 #D3D9E2)"
+    plate_hover = "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #F7F9FC, stop:1 #D3D9E2)"
     plate_down = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c['PLATINUM_BOTTOM']}, stop:1 {c['PLATINUM_TOP']})"
     return f"""
 QHeaderView {{ background: {c['HEADER_BOTTOM']}; }}

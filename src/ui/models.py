@@ -24,7 +24,7 @@ HEADERS = ["DEVICE", "STATUS", "VERIFICATION", ""]
 
 BadgeRole = Qt.UserRole + 1        # (text, kind) for the Status and Verification cells
 SubtitleRole = Qt.UserRole + 2     # second line of the device cell
-HelpRole = Qt.UserRole + 3         # True where the (?) target is drawn
+HelpRole = Qt.UserRole + 3         # True where the (?) target is drawn (Partial and None)
 RowRole = Qt.UserRole + 4          # the DriverRow
 MutedRole = Qt.UserRole + 5        # True for rows without an update
 SpinnerRole = Qt.UserRole + 6      # True while the row is queued, being looked up or being verified
@@ -302,8 +302,8 @@ class DriverTableModel(QAbstractTableModel):
                 return lvl or "—"
             if role == BadgeRole:
                 return (lvl, vf.KIND[lvl]) if lvl else None
-            if role == HelpRole:
-                return lvl == vf.PARTIAL
+            if role == HelpRole:                   # (?) opens the itemised checks with every reason
+                return lvl in (vf.PARTIAL, vf.NONE)
             if role in (Qt.ToolTipRole, Qt.AccessibleDescriptionRole):
                 return vf.explain(u) if u is not None and u.checks else None
         elif col == COL_SELECT:

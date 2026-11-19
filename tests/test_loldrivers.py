@@ -1,8 +1,6 @@
 """Live BYOVD protection: LOLDrivers feed (mock HTTP), .sys hashing, pipeline abort and purge."""
 import hashlib
-import io
 import json
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -10,7 +8,8 @@ import pytest
 import cli
 from conftest import KNOWN_BAD_SYS, REAL_LOLDRIVERS_FETCH, driver_zip, loldrivers_feed, canned_blocklist, windows_powershell
 from core import common, elevation, engine, installer
-from core.common import VerificationError
+from core.common import InstallError, VerificationError
+from core.model import Device, Update
 from core.security import loldrivers
 from mock_http import MockFeed
 from test_apply_flow import installed, restore_points, win_env, wifi_package  # noqa: F401
@@ -84,20 +83,21 @@ def test_directory_check_hashes_every_sys_file(tmp_path):
     assert "security.alert" in events
 
 
-def test_zip_members_are_hashed_without_extracting(tmp_path):
+def test_zip_packages_are_unpacked_safely_then_checked(tmp_path):
     clean, bad = tmp_path / "clean.zip", tmp_path / "bad.zip"
     clean.write_bytes(driver_zip())
     bad.write_bytes(driver_zip({"drivers/x64/helper.sys": KNOWN_BAD_SYS}))
-    assert [c["file"] for c in loldrivers.check_archive(clean, "zip", canned_blocklist())] == ["x200.sys"]
+    installer.unpack_package(clean, "zip", tmp_path / "c")
+    assert [c["file"] for c in loldrivers.check_directory(tmp_path / "c", canned_blocklist())] == ["x200.sys"]
+    installer.unpack_package(bad, "zip", tmp_path / "b")
     with pytest.raises(loldrivers.SecurityAlert, match="helper.sys"):
-        loldrivers.check_archive(bad, "zip", canned_blocklist())
-    assert sorted(p.name for p in tmp_path.iterdir() if p.name != "audit.jsonl") == ["bad.zip", "clean.zip"]
+        loldrivers.check_directory(tmp_path / "b", canned_blocklist())
     (tmp_path / "broken.zip").write_bytes(b"not a zip")
-    with pytest.raises(VerificationError, match="not a readable zip"):
-        loldrivers.check_archive(tmp_path / "broken.zip", "zip", canned_blocklist())
+    with pytest.raises(InstallError, match="could not be unpacked safely"):
+        installer.unpack_package(tmp_path / "broken.zip", "zip", tmp_path / "x")
 
 
-def test_cab_is_unpacked_to_a_temp_dir_that_is_always_purged(tmp_path, runner, windows, monkeypatch):
+def test_user_side_inspection_dir_is_purged_even_after_an_alert(tmp_path, runner, windows, monkeypatch):
     seen = []
 
     def expand(cmd, env):
@@ -106,11 +106,18 @@ def test_cab_is_unpacked_to_a_temp_dir_that_is_always_purged(tmp_path, runner, w
         (target / "evil.sys").write_bytes(KNOWN_BAD_SYS)
         return common.Result(0)
     runner.on("expand", expand)
+    update = Update(Device("Wifi"), "Wifi driver", "1", "2", "Microsoft Update Catalog", "", {
+        "origin": "ms-catalog", "artifact": {"format": "cab", "signature": {"type": "authenticode", "target": "catalog",
+                                                                           "subject": "CN=x"}}}, "pending")
+    ctx = engine.Context()
+    ctx.blocklist = canned_blocklist()
     with pytest.raises(loldrivers.SecurityAlert):
-        loldrivers.check_archive(tmp_path / "x.cab", "cab", canned_blocklist())
+        engine._inspect_driver_package(update, ctx, tmp_path / "x.cab")
     assert seen and not seen[0].exists()                                   # purged despite the alert
+    assert update.check("blocklist").state == "failed"
     monkeypatch.setattr(common, "OS_NAME", "linux")
-    assert loldrivers.check_archive(tmp_path / "x.cab", "cab", canned_blocklist()) is None    # deferred to the helper
+    assert engine._unpack_for_inspection(tmp_path / "x.cab", "cab", tmp_path / "y") is False    # left to the helper
+
 
 
 # -------------------------------------------------------------- installer

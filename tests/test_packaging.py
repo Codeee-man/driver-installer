@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from core import common, installer
+from core import common, elevation, installer
 from core.common import ElevationError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -165,9 +165,9 @@ def test_packaged_deb_helper_is_found(tmp_path, linux, monkeypatch):
     helper = tmp_path / "libexec" / "driver-installer-helper"
     helper.parent.mkdir()
     helper.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(installer, "HELPER_LINUX_PACKAGED", str(helper))
-    monkeypatch.setattr(installer, "_admin_only", lambda path: True)
-    assert installer.helper_command("/p.json") == [str(helper), "--apply-plan", "/p.json"]
+    monkeypatch.setattr(elevation, "HELPER_LINUX_PACKAGED", str(helper))
+    monkeypatch.setattr(elevation, "_admin_only", lambda path: True)
+    assert elevation.helper_command("/p.json") == [str(helper), "--apply-plan", "/p.json"]
 
 
 def test_frozen_build_uses_its_sibling_helper(tmp_path, linux, monkeypatch, caplog):
@@ -176,33 +176,33 @@ def test_frozen_build_uses_its_sibling_helper(tmp_path, linux, monkeypatch, capl
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(exe))
     with pytest.raises(ElevationError, match="driver-installer-helper is missing"):
-        installer.helper_command("/p.json")
+        elevation.helper_command("/p.json")
     (tmp_path / "driver-installer-helper").write_text("")
-    assert installer.helper_command("/p.json") == [str(tmp_path / "driver-installer-helper"), "--apply-plan", "/p.json"]
+    assert elevation.helper_command("/p.json") == [str(tmp_path / "driver-installer-helper"), "--apply-plan", "/p.json"]
     assert "running un-installed" in caplog.text
 
 
 def test_frozen_windows_build_elevates_itself_unless_installed(tmp_path, windows, monkeypatch):
     """DriverInstaller.exe is GUI, CLI and helper: a portable copy elevates itself (with a
     warning); once DriverInstaller-Setup.exe has installed it, the Program Files copy is used."""
-    monkeypatch.setattr(installer.ntpath, "join", __import__("os").path.join)
+    monkeypatch.setattr(elevation.ntpath, "join", __import__("os").path.join)
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     portable = tmp_path / "unzipped" / "DriverInstaller.exe"
     monkeypatch.setattr(sys, "executable", str(portable))
     portable.parent.mkdir()
     portable.write_text("")
-    assert installer.helper_command("p.json") == [str(portable.resolve()), "--apply-plan", "p.json"]
+    assert elevation.helper_command("p.json") == [str(portable.resolve()), "--apply-plan", "p.json"]
     installed = tmp_path / "ProgramFiles" / "Driver Installer" / "DriverInstaller.exe"
     installed.parent.mkdir(parents=True)
     installed.write_text("")
-    assert installer.helper_command("p.json") == [str(installed), "--apply-plan", "p.json"]
+    assert elevation.helper_command("p.json") == [str(installed), "--apply-plan", "p.json"]
 
 
 def test_appimage_elevates_itself_without_needing_fuse(tmp_path, linux, monkeypatch):
     image = tmp_path / "driver-installer.AppImage"
     image.write_text("")
     monkeypatch.setenv("APPIMAGE", str(image))
-    assert installer.helper_command("/p.json") == [str(image), "--appimage-extract-and-run", "--apply-plan", "/p.json"]
+    assert elevation.helper_command("/p.json") == [str(image), "--appimage-extract-and-run", "--apply-plan", "/p.json"]
 
 
 def test_gui_without_pyside_explains_what_to_install(monkeypatch, capsys):
@@ -218,3 +218,22 @@ def test_gui_without_pyside_explains_what_to_install(monkeypatch, capsys):
     monkeypatch.setattr(builtins, "__import__", no_pyside)
     assert cli.main(["gui"]) == common.EXIT_FAILED
     assert "python3-pyside6.qtwidgets" in capsys.readouterr().err
+
+
+def test_repository_layout_and_doc_links_are_current():
+    import re as _re
+    assert not (ROOT / "poc").exists() and not (ROOT / "TESTING_WINDOWS.md").exists()
+    assert (ROOT / "docs" / "TESTING_WINDOWS.md").is_file()
+    for doc in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]:
+        text = doc.read_text(encoding="utf-8")
+        assert "poc/" not in text, doc.name
+        for target in _re.findall(r"\]\(([^)#\s]+)\)", text):
+            if "://" not in target:
+                assert (doc.parent / target).exists(), f"{doc.name}: broken link {target}"
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    for path in ("packaging/windows/", "docs/TESTING_WINDOWS.md", "tools/codesign_windows.py",
+                 "tools/diagnose_windows.ps1", "tools/build_windows.py"):
+        name = path.rstrip("/").split("/")[-1]
+        assert name in readme and (ROOT / path).exists(), path
+    count = int(_re.search(r"# (\d+) tests", readme).group(1))
+    assert count >= 357

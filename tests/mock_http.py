@@ -103,6 +103,8 @@ class _Server:
 class MockCatalog(_Server):
     def __init__(self, cab: bytes = b"MSCF" + b"\0" * 2048):
         self.cab, self.requests, self.fail = cab, [], False
+        self.not_public: set[str] = set()     # update IDs answered like the live catalog: 302 -> ErrorInline.aspx
+        self.headers: list[dict] = []          # request headers of every POST
         self.digest = base64.b64encode(hashlib.sha1(cab).digest()).decode()
         self.download_host_path = "/d/msdownload/update/driver/drvs/2026/10/driver_0123456789abcdef.cab"
         outer = self
@@ -129,6 +131,8 @@ class MockCatalog(_Server):
                     return self._send(search_page(ROWS.get(query.get("q", [""])[0], [])))
                 if url.path == "/ScopedViewInline.aspx":
                     return self._send(details_page(query["updateid"][0]))
+                if url.path == "/ErrorInline.aspx":       # what following the redirect would show
+                    return self._send("<html><body>We did not find any results.</body></html>")
                 if url.path == outer.download_host_path:
                     return self._send(outer.cab, ctype="application/vnd.ms-cab-compressed")
                 self._send("not found", 404)
@@ -136,8 +140,15 @@ class MockCatalog(_Server):
             def do_POST(self):
                 form = urllib.parse.parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
                 outer.requests.append(("POST", self.path, form))
+                outer.headers.append(dict(self.headers))
                 if self.path != "/DownloadDialog.aspx" or "updateIDs" not in form:
                     return self._send("bad request", 400)
+                if any(uid in form["updateIDs"][0] for uid in outer.not_public):
+                    self.send_response(302)
+                    self.send_header("Location", f"{outer.base}/ErrorInline.aspx?id=2380070948")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 self._send(f"""<html><script>
 var downloadInformation = new Array();
 downloadInformation[0] = new Object();

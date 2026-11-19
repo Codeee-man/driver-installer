@@ -7,7 +7,7 @@ Where updates come from
 
 Privilege separation
   The front end runs unprivileged. `apply()` writes a plan file and starts the elevated
-  helper (installer.helper_command). The helper treats the plan as untrusted input and
+  helper (elevation.helper_command). The helper treats the plan as untrusted input and
   decides for itself what is acceptable:
     manifest package    -> manifest signature against the pinned keys, SHA-256, publisher signature
     catalog discovery   -> pnputil only, and the package's .cat must be signed by Microsoft's
@@ -26,7 +26,6 @@ import re
 import secrets
 import shutil
 import tempfile
-import zipfile
 from pathlib import Path
 
 from . import common, elevation, installer, manifest, restore, trust, verifier
@@ -287,19 +286,15 @@ def _record_delegated(update: Update) -> None:
 
 
 def _unpack_for_inspection(path: Path, fmt: str, dest: Path) -> bool:
-    """Unpack a driver package so its .sys and .cat files can be checked. False if it cannot be done here."""
-    if fmt == "zip":
-        try:
-            installer.safe_extract_zip(path, dest)
-        except (InstallError, OSError, zipfile.BadZipFile) as exc:
-            raise VerificationError(f"the driver package could not be unpacked safely: {exc}") from exc
-        return True
-    if fmt == "cab" and common.OS_NAME == "windows":
-        res = common.run(["expand", "-F:*", str(path), str(dest)], timeout=600)
-        if res is None or res.rc != 0:
-            raise VerificationError("the driver cabinet could not be unpacked")
-        return True
-    return False
+    """Unpack a driver package so its .sys and .cat files can be checked. False if it cannot be
+    done here (a .cab off Windows): the elevated helper unpacks and checks it in every case."""
+    if fmt == "cab" and common.OS_NAME != "windows":
+        return False
+    try:
+        installer.unpack_package(path, fmt, dest)
+    except InstallError as exc:
+        raise VerificationError(str(exc)) from exc
+    return True
 
 
 def _inspect_driver_package(update: Update, ctx: Context, path: Path) -> None:
@@ -345,7 +340,7 @@ def _inspect_driver_package(update: Update, ctx: Context, path: Path) -> None:
 
 
 def _download_manifest_package(update: Update, ctx: Context, progress=None) -> Path:
-    pkg, art = update.package, update.package["artifact"]
+    art = update.package["artifact"]
     sig = art["signature"]
     if ctx.demo:
         update.set_check("manifest", SKIPPED, "demo manifest, signed with a throwaway key that is not pinned")
@@ -380,17 +375,34 @@ def _download_manifest_package(update: Update, ctx: Context, progress=None) -> P
     return path
 
 
+class ChannelTrust(Exception):
+    """A Windows Update driver that only an administrator can fetch: no file to check yet."""
+
+    def __init__(self, catalog_reason: str, wua_reason: str):
+        super().__init__(f"{catalog_reason}; {wua_reason}")
+        self.catalog_reason, self.wua_reason = catalog_reason, wua_reason
+
+
 def _download_catalog_package(update: Update, ctx: Context, progress=None) -> Path:
+    """Fetch a catalog / Windows Update driver as the ordinary user and record the SHA-256 check.
+
+    Sources, in order: the public catalog (gives a digest); for Windows Update drivers the URL
+    WUA reported; then the Windows Update Agent itself. Only "this source has no copy" moves on
+    to the next source; a download that fails its checks never does."""
     pkg, art = update.package, update.package["artifact"]
-    where = "offered by Windows Update for this PC" if pkg.get("origin") == "windows-update" \
-        else "found in the Microsoft Update Catalog"
+    wua = pkg.get("origin") == "windows-update"
+    where = "offered by Windows Update for this PC" if wua else "found in the Microsoft Update Catalog"
     update.set_check("manifest", NOT_APPLICABLE, f"{where}, not in a signed manifest; "
                                                  "Microsoft's driver signature is required instead")
     try:
         info = ms_catalog.resolve_download(pkg)         # same update IDs; also gives the file's digest
     except ms_catalog.CatalogError as exc:
-        if not (pkg.get("origin") == "windows-update" and art.get("url")):
+        common.audit("catalog.download_unavailable", update=pkg["update_id"], reason=str(exc))
+        if not wua:
+            update.set_check("sha256", FAILED, f"could not get the file: {exc}")
             raise
+        if not art.get("url"):
+            return _fetch_through_wua(update, ctx, str(exc))
         common.audit("wua.download_fallback", update=pkg["update_id"], reason=str(exc))
         info = ms_catalog.CatalogFile(ms_catalog.normalise_download_url(art["url"]))
     try:
@@ -410,6 +422,52 @@ def _download_catalog_package(update: Update, ctx: Context, progress=None) -> Pa
         update.set_check("sha256", SKIPPED, "Microsoft published no digest for this file; it was hashed locally "
                                             "only, so later steps can detect changes")
     return path
+
+
+def _fetch_through_wua(update: Update, ctx: Context, catalog_reason: str) -> Path:
+    """The public catalog has no copy (typical for OEM drivers): ask the Windows Update Agent.
+    Raises ChannelTrust when only an administrator may download it."""
+    from .discovery import windows_update
+    pkg, art = update.package, update.package["artifact"]
+    verifier.private_dir(ctx.quarantine)
+    work = Path(tempfile.mkdtemp(prefix=".wua-", dir=ctx.quarantine))
+    try:
+        try:
+            cab = windows_update.fetch_package(pkg["update_id"], work, ms_catalog.MAX_DRIVER_BYTES)
+        except windows_update.WindowsUpdateError as exc:
+            if exc.needs_admin:
+                raise ChannelTrust(catalog_reason, str(exc)) from None
+            update.set_check("sha256", FAILED, f"could not get the file: {catalog_reason}; {exc}")
+            raise VerificationError(f"{catalog_reason}; {exc}") from None
+        digest, size = verifier.sha256_file(cab), cab.stat().st_size
+        target = ctx.quarantine / f"{digest[:16]}-{verifier.safe_name(art['filename'])}"
+        shutil.move(str(cab), target)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    art.update(sha256=digest, size=size, acquired="windows-update-agent")
+    update.sha256, update.path = digest, str(target)
+    update.set_check("sha256", PASSED, f"{size} bytes downloaded by the Windows Update Agent, which checks every "
+                                       f"file against Microsoft-signed update metadata (the public catalog has no "
+                                       f"copy: {catalog_reason}); SHA-256 {digest[:16]}… recorded for the installer")
+    return target
+
+
+def _trust_windows_update_channel(update: Update, why: ChannelTrust) -> None:
+    """Partial, not None: Windows offers this driver to this PC but lets only an administrator
+    download it. Nothing could be inspected yet, so the installer (elevated) has the Windows
+    Update Agent fetch it and runs every check on the .cab before anything is installed."""
+    art = update.package["artifact"]
+    art.update(acquire="windows-update-agent", sha256="", size=0)
+    later = "the installer, running as administrator, checks this on the downloaded package before installing"
+    update.set_check("sha256", SKIPPED, f"not downloaded yet: {why.catalog_reason}, and {why.wua_reason}. The "
+                                        "installer has the Windows Update Agent download it (verified against "
+                                        "Microsoft-signed update metadata) and hashes it")
+    update.set_check("blocklist", SKIPPED, f"no driver files to inspect before installing; {later}")
+    update.set_check("publisher", SKIPPED, f"Microsoft's driver catalog signature cannot be read before the "
+                                           f"download; {later}")
+    update.sha256, update.path = "", ""
+    update.status, update.detail = "verified", "Windows Update channel: " + _summary(update)
+    common.audit("verify.channel_trust", update=update.name, catalog=why.catalog_reason, wua=why.wua_reason)
 
 
 def _summary(update: Update) -> str:
@@ -437,12 +495,28 @@ def verify_update(update: Update, ctx: Context, progress=None) -> None:
         else:
             update.set_check("blocklist", NOT_APPLICABLE, "not a Windows kernel driver package")
         update.status, update.detail = "verified", _summary(update)
+    except ChannelTrust as why:
+        _trust_windows_update_channel(update, why)
     except (VerificationError, ms_catalog.CatalogError) as exc:
         _purge(ctx, update.sha256 or art.get("sha256", ""))   # also when a later check fails after the hash passed
-        for c in update.checks:
-            if c.reason == _NOT_YET:
-                update.set_check(c.key, SKIPPED, "not reached: an earlier step failed")
+        _record_failure(update, exc)
         update.status, update.detail, update.path = "failed", f"{exc} - file purged", ""
+
+
+def _record_failure(update: Update, exc: Exception) -> None:
+    """Make the reason visible on the checks themselves: the step that was running is FAILED
+    with the actual error (unless it already recorded one), and every later step names it."""
+    failed = next((c for c in update.checks if c.state == FAILED), None)
+    if failed is None:
+        failed = next((c for c in update.checks if c.reason == _NOT_YET), None)
+        if failed is not None:
+            update.set_check(failed.key, FAILED, str(exc))
+    for c in update.checks:
+        if c.reason == _NOT_YET:
+            update.set_check(c.key, SKIPPED, f"not reached: {failed.label if failed else 'an earlier step'} "
+                                             f"failed ({failed.reason if failed else exc})")
+    common.audit("verify.failed", update=update.name, source=update.source,
+                 step=failed.label if failed else "", reason=str(exc))
 
 
 def ready(updates: list[Update]) -> list[Update]:
@@ -505,7 +579,7 @@ def write_plan(updates: list[Update], ctx: Context, allow_without_snapshot: bool
 
 
 def helper_argv(plan_path: Path) -> list[str]:
-    return installer.helper_command(plan_path)
+    return elevation.helper_command(plan_path)
 
 
 def apply(updates: list[Update], ctx: Context, *, allow_without_snapshot: bool = False,
@@ -573,16 +647,36 @@ def _policy_catalog_package(desc) -> dict:
     update_id = str(desc.get("update_id", "")) if isinstance(desc, dict) else ""
     if not _GUID.match(update_id) or not isinstance(art, dict):
         raise VerificationError("malformed discovered package")
-    sha256, size = str(art.get("sha256", "")), art.get("size")
-    if not manifest.SHA256_RE.match(sha256) or not isinstance(size, int) or not 0 < size <= ms_catalog.MAX_DRIVER_BYTES:
-        raise VerificationError("discovered package was not downloaded and hashed")
     origin = "windows-update" if desc.get("origin") == "windows-update" else "ms-catalog"
     prefix = "windowsupdate" if origin == "windows-update" else "mscatalog"
-    return {"id": f"{prefix}.{update_id}", "origin": origin, "name": str(desc.get("name") or update_id)[:200],
-            "version": str(desc.get("version") or "0")[:64],
-            "artifact": {"filename": f"{update_id}.cab", "size": size, "sha256": sha256, "format": "cab",
-                         "signature": {"type": "authenticode", "target": "catalog", "subject": trust.MS_WHQL_SUBJECT}},
-            "install": {"method": "pnputil", "reboot_required": False}}
+    artifact = {"filename": f"{update_id}.cab", "format": "cab",
+                "signature": {"type": "authenticode", "target": "catalog", "subject": trust.MS_WHQL_SUBJECT}}
+    if origin == "windows-update" and art.get("acquire") == "windows-update-agent":
+        # Only an administrator could download it: the helper asks the Windows Update Agent
+        # itself (Microsoft-signed metadata), then hashes and checks the .cab like any other.
+        artifact["acquire"] = "windows-update-agent"
+    else:
+        sha256, size = str(art.get("sha256", "")), art.get("size")
+        if not manifest.SHA256_RE.match(sha256) or not isinstance(size, int) or not 0 < size <= ms_catalog.MAX_DRIVER_BYTES:
+            raise VerificationError("discovered package was not downloaded and hashed")
+        artifact.update(sha256=sha256, size=size)
+    return {"id": f"{prefix}.{update_id}", "origin": origin, "update_id": update_id,
+            "name": str(desc.get("name") or update_id)[:200], "version": str(desc.get("version") or "0")[:64],
+            "artifact": artifact, "install": {"method": "pnputil", "reboot_required": False}}
+
+
+def _acquire_through_wua(pkg: dict, staging: Path) -> Path:
+    """Helper side of a Windows Update channel item: download as administrator, record the hash."""
+    from .discovery import windows_update
+    work = staging / ("wua-" + pkg["update_id"])
+    try:
+        cab = windows_update.fetch_package(pkg["update_id"], work, ms_catalog.MAX_DRIVER_BYTES)
+    except windows_update.WindowsUpdateError as exc:
+        raise VerificationError(str(exc)) from None
+    art = pkg["artifact"]
+    art.update(sha256=verifier.sha256_file(cab), size=cab.stat().st_size)
+    common.audit("helper.wua_acquired", update=pkg["update_id"], sha256=art["sha256"], size=art["size"])
+    return cab
 
 
 def _policy_repo_package(desc) -> dict:
@@ -683,7 +777,9 @@ def _run_plan(plan: dict, result: dict, trusted_keys) -> None:
                     continue
                 staged = None
                 art = pkg.get("artifact")
-                if art:
+                if art and art.get("acquire") == "windows-update-agent":
+                    staged = _acquire_through_wua(pkg, staging)
+                elif art:
                     staged = verifier.stage_verified_copy(Path(str(item["file"])), staging, art["sha256"],
                                                           art["size"], art["filename"])
                     sig_copy = None

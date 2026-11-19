@@ -228,24 +228,39 @@ def normalise_download_url(url: str) -> str:
 
 
 # --------------------------------------------------------------- requests
+class CatalogUnavailable(CatalogError):
+    """The catalog knows no public download for this update (it redirects to ErrorInline.aspx).
+    Common for OEM drivers that Windows Update offers only to matching PCs."""
+
+    def __init__(self, update_id: str, code: int, location: str):
+        error_id = urllib.parse.parse_qs(urllib.parse.urlsplit(location).query).get("id", ["?"])[0]
+        super().__init__(f"Microsoft Update Catalog returned {code} ErrorInline.aspx (error id {error_id}) "
+                         f"for UpdateID {update_id}: no public download for this update")
+        self.update_id, self.code, self.error_id = update_id, code, error_id
+
+
 class CatalogClient:
-    """The three catalog requests. `fetch` is injectable so tests can supply canned pages."""
+    """The three catalog requests. `fetch(url, data, headers=..., follow_redirects=...)` is
+    injectable so tests can supply canned pages."""
 
     def __init__(self, base: str | None = None, fetch=None, delay: float | None = None,
                  allow_loopback_http: bool = False):
         self.base = (base or BASE).rstrip("/")
         self.delay = REQUEST_DELAY if delay is None else delay
         self._last = 0.0
-        self._fetch = fetch or (lambda url, data=None: verifier.http_fetch(
+        self._fetch = fetch or (lambda url, data=None, headers=None, follow_redirects=True: verifier.http_fetch(
             url, data=data, limit=MAX_PAGE_BYTES, allow_loopback_http=allow_loopback_http,
-            headers={"Content-Type": "application/x-www-form-urlencoded"} if data else None))
+            headers=headers, follow_redirects=follow_redirects))
 
-    def _get(self, url: str, data: bytes | None = None) -> str:
+    def _get(self, url: str, data: bytes | None = None, headers: dict | None = None,
+             follow_redirects: bool = True) -> str:
         wait = self.delay - (time.monotonic() - self._last)
         if wait > 0:
             time.sleep(wait)
         try:
-            body = self._fetch(url, data)
+            body = self._fetch(url, data, headers=headers, follow_redirects=follow_redirects)
+        except verifier.RedirectError:
+            raise
         except VerificationError as exc:
             raise CatalogError(str(exc)) from exc
         finally:
@@ -262,15 +277,30 @@ class CatalogClient:
         return parse_details(self._get(f"{self.base}/ScopedViewInline.aspx?updateid={update_id}"))
 
     def files(self, update_id: str) -> list[CatalogFile]:
+        """POST DownloadDialog.aspx the way the catalog's own page does: form field updateIDs
+        holding [{"size":0,"languages":"","uidInfo":ID,"updateID":ID}], with the search page as
+        Referer. Redirects are not followed: the catalog answers 302 -> ErrorInline.aspx for
+        updates it cannot serve, and that page must not be mistaken for an empty dialog."""
         if not _GUID.match(update_id):
             raise CatalogError("malformed update id")
         body = json.dumps([{"size": 0, "languages": "", "uidInfo": update_id, "updateID": update_id}],
                           separators=(",", ":"))
-        html = self._get(f"{self.base}/DownloadDialog.aspx",
-                         urllib.parse.urlencode({"updateIDs": body}).encode())
+        headers = {"Content-Type": "application/x-www-form-urlencoded",
+                   "Referer": f"{self.base}/Search.aspx?q={update_id}", "Origin": self.base}
+        try:
+            html = self._get(f"{self.base}/DownloadDialog.aspx",
+                             urllib.parse.urlencode({"updateIDs": body}).encode(), headers=headers,
+                             follow_redirects=False)
+        except verifier.RedirectError as exc:
+            common.audit("catalog.redirect", update=update_id, code=exc.code, location=exc.location)
+            if "errorinline.aspx" in exc.location.lower():
+                raise CatalogUnavailable(update_id, exc.code, exc.location) from None
+            raise CatalogError(f"Microsoft Update Catalog redirected the download dialog for UpdateID "
+                               f"{update_id} ({exc.code} to {exc.location})") from None
         files = parse_download_dialog(html)
         if not files:
-            raise CatalogError("the catalog returned no download link for this update")
+            raise CatalogError(f"Microsoft Update Catalog returned a download dialog without a download "
+                               f"link for UpdateID {update_id}")
         return files
 
 

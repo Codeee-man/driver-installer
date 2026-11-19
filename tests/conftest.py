@@ -59,8 +59,8 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setenv("ProgramFiles", str(tmp_path / "ProgramFiles"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))     # UI preferences never touch the real home
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
-    monkeypatch.setattr(installer, "HELPER_LINUX", str(tmp_path / "no-helper-installed"))
-    monkeypatch.setattr(installer, "HELPER_LINUX_PACKAGED", str(tmp_path / "no-packaged-helper"))
+    monkeypatch.setattr(elevation, "HELPER_LINUX", str(tmp_path / "no-helper-installed"))
+    monkeypatch.setattr(elevation, "HELPER_LINUX_PACKAGED", str(tmp_path / "no-packaged-helper"))
     monkeypatch.setattr(engine, "AUTO_DISCOVER", False)          # no test talks to the internet by accident
     monkeypatch.setattr(loldrivers, "fetch", lambda *a, **k: canned_blocklist())
     common.init_audit(tmp_path / "audit.jsonl")
@@ -137,7 +137,25 @@ def authenticode_json(subject="CN=Intel Corporation, O=Intel Corporation, L=Sant
 WUA_EMPTY = json.dumps({"policy": None, "updates": [], "error": None, "resultCode": 2})
 
 
-def windows_powershell(restore=RESTORE_CREATED, signer=None, wua=WUA_EMPTY):
+def wua_fetch_result(error=None, hresult=None, stage="copy", cab: bytes | None = b"MSCF" + b"\0" * 512):
+    """Stand-in for windows_update._FETCH_SCRIPT: writes the .cab into SD_DEST like
+    IUpdate2.CopyFromCache would, or reports the error the agent raised."""
+    def respond(env):
+        files = []
+        if error is None and cab is not None:
+            target = Path(env["SD_DEST"]) / "8f1d0c2e3a4b_driver.cab"
+            target.write_bytes(cab)
+            files = [{"path": str(target), "size": len(cab)}]
+        return json.dumps({"files": files, "error": error, "hresult": hresult, "stage": stage if error else "copy",
+                           "downloaded": error is None})
+    return respond
+
+
+WUA_NOT_OFFERED = wua_fetch_result(error="Windows Update no longer offers this update to this PC",
+                                   hresult="0x80131500", stage="search")
+
+
+def windows_powershell(restore=RESTORE_CREATED, signer=None, wua=WUA_EMPTY, wua_fetch=WUA_NOT_OFFERED):
     """PowerShell stand-in: answers the Authenticode, restore-point and Windows Update scripts
     by their env inputs; anything else (WMI queries) gets an empty list."""
     def respond(cmd, env):
@@ -147,6 +165,8 @@ def windows_powershell(restore=RESTORE_CREATED, signer=None, wua=WUA_EMPTY):
             return common.Result(0, restore)
         if "SD_CRITERIA" in env:
             return common.Result(0, wua() if callable(wua) else wua)
+        if "SD_UPDATE_ID" in env:
+            return common.Result(0, wua_fetch(env))
         return common.Result(0, "[]")
     return respond
 

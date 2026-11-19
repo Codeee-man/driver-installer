@@ -20,9 +20,6 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-import shutil
-import tempfile
-import zipfile
 from pathlib import Path
 
 from .. import common, verifier
@@ -159,33 +156,3 @@ def check_directory(directory: Path, blocklist: Blocklist) -> list[dict]:
         with open(path, "rb") as fh:
             _judge(path.relative_to(directory).as_posix(), _digests(fh), blocklist, checked, matches)
     return _finish(str(directory), checked, matches)
-
-
-def check_archive(path: Path, fmt: str, blocklist: Blocklist) -> list[dict] | None:
-    """Check the .sys files inside a downloaded driver package before it is staged.
-
-    .zip members are hashed straight from the archive, without extracting. .cab files are
-    unpacked with Windows' expand.exe into a temporary directory that is always removed.
-    Returns None when the archive cannot be opened here (a .cab on a non-Windows host):
-    the elevated helper repeats this check on the extracted package in every case."""
-    if fmt == "zip":
-        checked, matches = [], []
-        try:
-            with zipfile.ZipFile(path) as zf:
-                for info in zf.infolist():
-                    if not info.is_dir() and info.filename.lower().endswith(".sys"):
-                        with zf.open(info) as member:
-                            _judge(info.filename, _digests(member), blocklist, checked, matches)
-        except (zipfile.BadZipFile, OSError) as exc:
-            raise VerificationError(f"{Path(path).name} is not a readable zip archive: {exc}") from exc
-        return _finish(str(path), checked, matches)
-    if fmt == "cab" and common.OS_NAME == "windows":
-        tmp = Path(tempfile.mkdtemp(prefix="sd-lol-"))
-        try:
-            res = common.run(["expand", "-F:*", str(path), str(tmp)], timeout=600)
-            if res is None or res.rc != 0:
-                return None
-            return check_directory(tmp, blocklist)
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)       # purge, whether clean or not
-    return None

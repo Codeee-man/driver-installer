@@ -5,6 +5,7 @@ version written into core/common.py, so `driver-installer --version` matches the
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import re
@@ -100,6 +101,39 @@ def download(url: str, dest: Path, sha256: str) -> Path:
         raise BuildError(f"checksum mismatch for {url}: got {actual}, expected {sha256}")
     tmp.replace(dest)
     return dest
+
+
+def program_files_dirs(env=None) -> list[Path]:
+    """Both Program Files folders, 32-bit first (where SDK and installer tools usually live)."""
+    env = os.environ if env is None else env
+    dirs = [env.get("ProgramFiles(x86)") or r"C:\Program Files (x86)", env.get("ProgramFiles") or r"C:\Program Files"]
+    return [Path(d) for d in dict.fromkeys(dirs)]
+
+
+def find_windows_tool(name: str, override_var: str, relative_paths, env=None) -> list[Path]:
+    """Candidates for a Windows build tool: $override_var if set (must exist), else PATH, else
+    each glob in `relative_paths` under both Program Files folders. Empty if none exists."""
+    env = os.environ if env is None else env
+    if env.get(override_var):
+        path = Path(env[override_var])
+        if not path.is_file():
+            raise BuildError(f"{override_var}={path} does not exist")
+        return [path]
+    on_path = shutil.which(name, path=env.get("PATH"))
+    if on_path:
+        return [Path(on_path)]
+    return [p for base in program_files_dirs(env) for pattern in relative_paths
+            for p in base.glob(pattern) if p.is_file()]
+
+
+def powershell(script: str, env: dict, runner=subprocess.run, timeout: int = 300):
+    """Run a script with Windows PowerShell 5.1, the same way src/core/common.powershell does:
+    -EncodedCommand (no quoting), no profile, and without PowerShell 7's PSModulePath, which
+    stops 5.1 from loading its own modules (Get-AuthenticodeSignature among them)."""
+    env = {k: v for k, v in env.items() if k.upper() != "PSMODULEPATH"}
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode()
+    return runner(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                  capture_output=True, text=True, timeout=timeout, env=env)
 
 
 def run(cmd: list[str], **kw) -> None:

@@ -22,9 +22,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFram
 
 from core import common, engine
 from core.common import ElevationError
-from core.model import FAILED
 from . import dialogs, settings, theme
-from . import verification as vf
 from .delegates import BadgeDelegate, CheckDelegate, NameDelegate, Spinner
 from .models import COL_DEVICE, COL_SELECT, COL_STATUS, COL_VERIFY, DriverTableModel
 from .popover import ChecksPopover

@@ -69,8 +69,6 @@ driver-installer/
 ├── schema/
 │   ├── manifest.schema.json
 │   └── example.manifest.json
-├── poc/
-│   └── safedriver_poc.py         # Phase 1 proof of concept
 ├── packaging/
 │   ├── windows/                  # WiX/MSI, signing config
 │   └── linux/                    # deb, rpm, polkit policy, .desktop
@@ -144,13 +142,13 @@ of the previous one, so truncation or editing is detectable with
 (`%ProgramData%\SafeDriver\logs`, `/var/log/safedriver` for the helper;
 per-user state dir for the unprivileged side).
 
-## 8. PoC scope and limits
+## 8. From proof of concept to implementation
 
-`poc/safedriver_poc.py` implements scanning on both OSes, signed-manifest
-loading, the verified downloader, Authenticode/GPG check functions, the audit
-log and a PySide6 window. It deliberately **does not install anything**: the
-apply step prints the snapshot and install commands it would run. The fwupd
-integration shells out to `fwupdmgr --json` instead of using D-Bus.
+This document is the Phase 1 design. The single-file proof of concept that went with it was
+removed once `src/` superseded it; the implementation is Python with PySide6 rather than Rust
+and Tauri, but keeps the process model above (unprivileged front ends, one-shot elevated helper
+that re-verifies everything). See the README for the current layout and `docs/PHASE2.md` for
+what the implementation adds.
 
 ## 9. Open decisions for Phase 2
 

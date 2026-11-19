@@ -39,8 +39,8 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_common import (FONT, FONT_LICENSE, ROOT, BuildError, resolve_version, run, sha256_file,  # noqa: E402
-                          stage_source, warn_if_unpinned)
+from build_common import (FONT, FONT_LICENSE, ROOT, BuildError, find_windows_tool, resolve_version, run,  # noqa: E402
+                          sha256_file, stage_source, warn_if_unpinned)
 import codesign_windows  # noqa: E402
 
 SPEC = ROOT / "packaging" / "windows" / "driver-installer.spec"
@@ -89,7 +89,7 @@ def icon_file(work: Path) -> Path | None:
     try:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtGui import QGuiApplication, QImage
-        app = QGuiApplication.instance() or QGuiApplication([])
+        _app = QGuiApplication.instance() or QGuiApplication([])     # QImage needs a running app
         target = work / "driver-installer.ico"
         if QImage(str(ROOT / "contrib" / "icons" / "driver-installer.png")).save(str(target), "ICO"):
             return target
@@ -175,17 +175,8 @@ def sign(app_dir: Path) -> codesign_windows.SigningResult:
 
 
 def find_iscc(env=None) -> Path | None:
-    env = os.environ if env is None else env
-    if env.get("ISCC"):
-        return Path(env["ISCC"]) if Path(env["ISCC"]).is_file() else None
-    found = shutil.which("iscc", path=env.get("PATH"))
-    if found:
-        return Path(found)
-    for base in (env.get("ProgramFiles(x86)") or r"C:\Program Files (x86)", env.get("ProgramFiles") or r"C:\Program Files"):
-        candidate = Path(base) / "Inno Setup 6" / "ISCC.exe"
-        if candidate.is_file():
-            return candidate
-    return None
+    found = find_windows_tool("iscc", "ISCC", ("Inno Setup 6/ISCC.exe",), env)
+    return found[0] if found else None
 
 
 def iscc_command(iscc: Path, version: str, app_dir: Path, shim: Path, out: Path, icon: Path | None,

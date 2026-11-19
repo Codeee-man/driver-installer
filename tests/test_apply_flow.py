@@ -245,7 +245,7 @@ def test_cli_prompts_before_continuing_without_a_restore_point(win_env, as_user,
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
     answers = iter(["install", "n"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    assert cli.main(["--update-all", "--apply", *win_env.publish()]) == cli.EXIT_SNAPSHOT
+    assert cli.main(["--update-all", "--apply", *win_env.publish()]) == common.EXIT_SNAPSHOT
     assert installed(win_env) == [] and len(win_env.elevations) == 1
     answers = iter(["install", "y"])
     assert cli.main(["--update-all", "--apply", *win_env.publish()]) == 0
