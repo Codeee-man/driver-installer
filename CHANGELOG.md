@@ -6,6 +6,13 @@ each tag's GitHub Release shows its section from this file above the downloads
 
 ## [Unreleased]
 
+### Fixed
+- **Install confirmation no longer overflows the screen.** With many drivers selected, the
+  "Download and Install" dialog grew past the screen and hid its buttons. It now stays within
+  580 px (and 75 % of the screen): the driver list and the "partially verified" notes each scroll in
+  their own framed box, every driver is listed instead of the first 8 (or 5), and Install / Cancel
+  are pinned below the boxes. Same wording, buttons and themes as before.
+
 ## [1.1.3] - 2026-11-20
 
 ### Fixed

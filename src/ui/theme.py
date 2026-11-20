@@ -286,6 +286,13 @@ QToolTip {{ background: {c['SURFACE']}; color: {c['TEXT']}; border: 1px solid {c
            font-family: '{fam}'; font-size: {pt(9)}; }}
 QMessageBox QLabel {{ color: {c['TEXT']}; }}
 QMessageBox QTextEdit {{ background: {c['SURFACE']}; color: {c['MUTED']}; border: 1px solid {c['BORDER']}; }}
+QDialog#confirm QLabel {{ color: {c['TEXT']}; font-size: {pt(9)}; }}
+QDialog#confirm QLabel#confirmTitle {{ font-weight: {bold}; font-size: {pt(10)}; }}
+QDialog#confirm QPlainTextEdit {{ background: {c['SURFACE']}; color: {c['MUTED']}; border: 1px solid {c['BORDER']};
+                                  border-radius: {r}px; padding: 4px 6px; font-size: {pt(9)};
+                                  selection-background-color: {c['SURFACE_SELECTED']}; }}
+QDialog#confirm QPlainTextEdit#confirmList {{ color: {c['TEXT']}; }}
+QDialog#confirm QPlainTextEdit#confirmNotes {{ color: {c['MUTED']}; }}
 
 {metal or ''}
 QScrollBar:vertical {{ background: {c['SURFACE']}; width: 8px; margin: 0; }}

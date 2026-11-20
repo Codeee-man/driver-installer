@@ -457,3 +457,50 @@ def test_clean_theme_is_metallic_monochrome():
         theme.set_current("matrix")
     with pytest.raises(ValueError):
         theme.set_current("neon")
+
+
+@pytest.mark.parametrize("theme_name", ["matrix", "clean"])
+def test_confirmation_with_many_partial_drivers_fits_the_screen(window, theme_name):
+    """12 Partial drivers: the dialog stays within 75 % of the screen (and 580 px), the notes
+    scroll in their own box, and Install / Cancel stay visible below it without scrolling."""
+    from PySide6.QtWidgets import QPlainTextEdit
+    from ui import dialogs
+    app, win, _ = window
+    if theme.current().name != theme_name:
+        win.toggle_theme()
+    many = [make_update(f"Partial device {n:02d} with a long vendor name", PARTIAL_CHECKS, pid=f"p{n}")
+            for n in range(12)]
+    title, text, details, label = dialogs.install_confirmation(many, ["pnputil /add-driver x.inf"] * 12)
+    assert "Install 12 driver update(s)?" in text and "12 of them are only partially verified:" in text
+    assert "Partial device 11 with a long vendor name: 1.0 → 2.0" in text           # nothing is cut off
+    dlg = dialogs.ConfirmDialog(win, title, text, details, label)
+    dlg.show()
+    app.processEvents()
+    try:
+        screen = dlg.screen().availableGeometry()
+        assert dlg.height() <= min(dialogs.MAX_HEIGHT, int(screen.height() * 0.75))
+        assert dlg.frameGeometry().height() <= screen.height()
+        header, *_ = dlg.labels
+        assert header.text() == "Install 12 driver update(s)?"
+        assert [lb.text() for lb in dlg.labels][1] == "12 of them are only partially verified:"
+        drivers, notes = dlg.boxes
+        assert isinstance(notes, QPlainTextEdit) and notes.isReadOnly() and notes.objectName() == "confirmNotes"
+        assert notes.maximumHeight() <= 260 and notes.verticalScrollBar().maximum() > 0       # it scrolls
+        assert notes.toPlainText().count("LOLDrivers BYOVD check skipped") == 12
+        assert drivers.verticalScrollBar().maximum() > 0                                     # so does the list
+        for button, label_text in ((dlg.accept_button, "Install"), (dlg.cancel_button, "Cancel")):
+            assert button.isVisible() and button.text().replace("&", "") == label_text
+            top_left = button.mapTo(dlg, button.rect().topLeft())
+            assert dlg.rect().contains(top_left) and dlg.rect().contains(top_left + button.rect().bottomRight())
+            assert not notes.isAncestorOf(button) and not drivers.isAncestorOf(button)
+        assert dlg.cancel_button.isDefault() and not dlg.accept_button.isDefault()
+        dlg.details_button.setChecked(True)                    # details open: still bounded, buttons still there
+        app.processEvents()
+        assert dlg.details.isVisible() and dlg.height() <= min(dialogs.MAX_HEIGHT, int(screen.height() * 0.75))
+        assert dlg.rect().contains(dlg.accept_button.mapTo(dlg, dlg.accept_button.rect().bottomRight()))
+        dlg.accept_button.click()
+        assert dlg.result() == dialogs.QDialog.Accepted
+    finally:
+        dlg.close()
+        if theme.current().name != "matrix":
+            win.toggle_theme()
