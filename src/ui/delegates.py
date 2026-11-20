@@ -15,10 +15,11 @@ from . import theme
 from .models import COL_STATUS, BadgeRole, HelpRole, MutedRole, SpinnerRole, SubtitleRole
 
 PAD_X = 12
-BADGE_H = 20
 HELP_D = 16
 ICON_W = 12                     # tick drawn before the text of badges whose theme asks for one
 SPIN_D = 14                     # loading spinner beside a "Queued" / "Scanning…" / "Checking…" pill
+SPIN_GAP = 10                   # px between the widest loading pill and the spinner
+LOADING_TEXTS = ("Queued", "Scanning…", "Checking…")
 TERMINAL_FRAMES = "|/-\\"        # Matrix: a terminal spinner, one character per frame
 
 
@@ -57,9 +58,18 @@ class Spinner(QObject):
 
 def paint_spinner(painter, rect: QRectF, step: int, color: QColor) -> None:
     if theme.current().name == theme.MATRIX:
-        painter.setFont(theme.font(11, mono=True))
-        painter.setPen(color)
-        painter.drawText(rect, Qt.AlignCenter, TERMINAL_FRAMES[step % len(TERMINAL_FRAMES)])
+        # The terminal spinner | / - \ drawn as square-capped 2 px strokes through the centre of
+        # the box: fonts report unreliable bounds for these glyphs (VT323 puts "-" 2 px high), so
+        # characters would bob up and down between frames.
+        frame = step % len(TERMINAL_FRAMES)
+        half = rect.height() / 2 - 2
+        dx, dy = ((0, half), (half * 0.75, -half), (half, 0), (half * 0.75, half))[frame]
+        c = rect.center()
+        pen = QPen(color, 2)
+        pen.setCapStyle(Qt.SquareCap)
+        painter.setPen(pen)
+        painter.setRenderHint(QPainter.Antialiasing, frame in (1, 3))
+        painter.drawLine(QPointF(c.x() - dx, c.y() - dy), QPointF(c.x() + dx, c.y() + dy))
         return
     pen = QPen(color, 1.8)
     pen.setCapStyle(Qt.RoundCap)
@@ -80,6 +90,11 @@ def _color(hex_value: str, alpha: int = 255) -> QColor:
     c = QColor(hex_value)
     c.setAlpha(alpha)
     return c
+
+
+def _fill(fill) -> QColor:
+    """A badge fill: "#rrggbb", or ("#rrggbb", alpha) for a tint over the row."""
+    return _color(*fill) if isinstance(fill, tuple) else _color(fill)
 
 
 class _Base(QStyledItemDelegate):
@@ -134,9 +149,12 @@ class BadgeDelegate(_Base):
         self.spinner = spinner
 
     @classmethod
-    def spinner_rect(cls, cell: QRect, text: str, kind: str | None = None) -> QRect:
-        badge = cls.badge_rect(cell, text, kind)
-        return QRect(badge.right() + 8, cell.center().y() - SPIN_D // 2 + 1, SPIN_D, SPIN_D)
+    def spinner_rect(cls, cell: QRect, text: str = "", kind: str | None = None) -> QRect:
+        """One column for every spinner, after the widest loading pill, centred on the pill:
+        rows line up whatever their pill says."""
+        widest = max(cls.badge_rect(cell, t).width() for t in LOADING_TEXTS)
+        badge = cls.badge_rect(cell, LOADING_TEXTS[0])
+        return QRect(badge.left() + widest + SPIN_GAP, badge.center().y() - SPIN_D // 2 + 1, SPIN_D, SPIN_D)
 
     @staticmethod
     def badge_font():
@@ -148,7 +166,8 @@ class BadgeDelegate(_Base):
         fm = QFontMetrics(cls.badge_font())
         icon = kind is not None and badge_style(kind)[5] == "check"
         width = fm.horizontalAdvance(theme.badge_text(text)) + 18 + (ICON_W + 4 if icon else 0)
-        return QRect(cell.left() + PAD_X, cell.center().y() - BADGE_H // 2 + 1, width, BADGE_H)
+        height = theme.current().badge_height
+        return QRect(cell.left() + PAD_X, cell.center().y() - height // 2 + 1, width, height)
 
     @classmethod
     def help_rect(cls, cell: QRect, text: str, kind: str | None = None) -> QRect:
@@ -175,7 +194,7 @@ class BadgeDelegate(_Base):
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(rect.adjusted(-1, -1, 1, 1), radius + 1, radius + 1)
         painter.setPen(QPen(_color(border), 1))
-        painter.setBrush(_color(fill) if fill else (_color(fg, fill_alpha) if fill_alpha else Qt.NoBrush))
+        painter.setBrush(_fill(fill) if fill else (_color(fg, fill_alpha) if fill_alpha else Qt.NoBrush))
         painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
         text_rect = rect
         if icon == "check":

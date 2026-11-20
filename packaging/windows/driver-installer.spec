@@ -23,6 +23,7 @@ fonts = os.path.join("ui", "assets", "fonts")
 datas = [
     (os.path.join(SRC, fonts, "VT323-Regular.ttf"), fonts),
     (os.path.join(SRC, fonts, "VT323-OFL.txt"), fonts),
+    (os.path.join(SRC, "ui", "assets", "icons"), os.path.join("ui", "assets", "icons")),   # checkbox ticks (Clean)
     (os.path.join(SRC, "LICENSE"), "licenses"),
     (os.path.join(SRC, fonts, "VT323-OFL.txt"), "licenses"),
 ]

@@ -6,7 +6,21 @@ each tag's GitHub Release shows its section from this file above the downloads
 
 ## [Unreleased]
 
+### Changed
+- **Clean theme redesigned: Warm Carbon & Vivid Orange.** Carbon surfaces, one orange accent
+  (`#FF6B1A`) for the "Download and Install" button, the progress bar, checked boxes and focus;
+  semantic pills: orange-tinted "To update", slate "Up to date", green Full, amber Partial,
+  coral None. Rounded geometry throughout: 12 px table and log, 8 px buttons, full pills,
+  5 px checkboxes (now with a tick), 4 px progress bar. Row highlights are clipped to the
+  table's rounded corners.
+- **Matrix layout polish.** `LOG`, `[ MATRIX ]` and `RESCAN` share one height, padding and a
+  1px terminal border with hover states; row spinners line up in one column, centred on their
+  pill, and no longer bob between frames.
+
 ### Fixed
+- Long status messages end in "…" (full text in the tooltip) and keep a fixed gap before the
+  `1 / 5` counter, instead of being cut mid-word against it.
+- The window starts with focus in the device list, so `LOG` no longer looks highlighted.
 - **Install confirmation no longer overflows the screen.** With many drivers selected, the
   "Download and Install" dialog grew past the screen and hid its buttons. It now stays within
   580 px (and 75 % of the screen): the driver list and the "partially verified" notes each scroll in

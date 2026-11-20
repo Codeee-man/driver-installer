@@ -42,6 +42,8 @@ class Theme:
     title_spacing: int                  # px
     row_height: int
     header_labels: dict                 # button -> label
+    panel_radius: int = 3               # table and log drawer
+    badge_height: int = 20              # pills; with badge_radius = height / 2 they are full pills
 
 
 _MATRIX_COLORS = {
@@ -70,46 +72,49 @@ MATRIX_THEME = Theme(
     header_labels={"log": "LOG", "rescan": "RESCAN"},
 )
 
-# Metallic Monochrome (Obsidian & Brushed Silver). Colour, where it remains, only marks a problem.
+# Warm Carbon & Vivid Orange: carbon surfaces, one orange accent for action and focus, and
+# semantic pills (green Full, amber Partial, coral None). Rounded geometry throughout.
 _CLEAN_COLORS = {
-    "BG": "#0D0F12",                    # matte obsidian window
-    "SURFACE": "#15181E",               # gunmetal table and panels
-    "SURFACE_HOVER": "#1A1E25", "SURFACE_SELECTED": "#21262F",
-    "HEADER_TOP": "#1D2129", "HEADER_BOTTOM": "#14171D",
-    "TEXT": "#F4F6F9",                  # titanium white
-    "MUTED": "#8C95A4",                 # cool steel: secondary metadata
-    "MUTED_DIM": "#6E7685",
-    "SLATE": "#565E6B", "SLATE_DIM": "#4A515C",   # up-to-date rows
-    "BORDER": "#2B313C", "BORDER_HOVER": "#4A5364", "BORDER_DIM": "#1E232B",
-    "ACCENT": "#E8ECF2", "ACCENT_HOVER": "#FFFFFF", "ON_ACCENT": "#0D0F12",
-    "PLATINUM_TOP": "#E8ECF2", "PLATINUM_BOTTOM": "#C2C9D4", "PLATINUM_EDGE": "#9AA3B1",
-    "PLATINUM_HIGHLIGHT": "#FFFFFF",
-    "SILVER": "#E4E8EF", "SILVER_FILL": "#232832",
-    "GREEN": "#F4F6F9",                 # "ok" is platinum, not green
-    "FOCUS": "#A9B3C2", "DISABLED": "#474E5A",
-    "AMBER": "#C8B99A", "AMBER_BORDER": "#6B6352",   # champagne steel: Partial and (?)
-    "RED": "#D47A7A", "RED_BORDER": "#5E3838",       # muted crimson steel
+    "BG": "#111317",                    # warm carbon window
+    "SURFACE": "#181B21",               # table, log, panels
+    "SURFACE_HOVER": "#1D2027", "SURFACE_SELECTED": "#252A33",
+    "HEADER": "#1E222A",                # table header, progress track, quiet pills
+    "TEXT": "#F2F4F7",
+    "MUTED": "#9AA3B2",                 # secondary metadata
+    "MUTED_DIM": "#6E7787",
+    "SLATE": "#6E7787", "SLATE_DIM": "#5A6270",   # up-to-date rows
+    "BORDER": "#2A2F3A", "BORDER_HOVER": "#3D4452", "BORDER_DIM": "#20242C",
+    "ACCENT": "#FF6B1A", "ACCENT_HOVER": "#FF823B", "ACCENT_PRESSED": "#E0580C", "ON_ACCENT": "#FFFFFF",
+    "ACCENT_SOFT": "#FF8534",           # text and border of the "To update" pill
+    "FOCUS": "#FF6B1A",
+    "DISABLED": "#5A6270", "DISABLED_FILL": "#232730",
+    "GREEN": "#3DD68C", "AMBER": "#F5B041", "AMBER_BORDER": "#6B5226",
+    "RED": "#EB5757", "RED_BORDER": "#6B2C2C",
 }
+
+# Pill fills with transparency: (colour, alpha 0-255).
+_TINT = {"accent": ("#FF6B1A", round(0.16 * 255)), "full": ("#2ECC71", round(0.14 * 255)),
+         "partial": ("#F5B041", round(0.15 * 255)), "none": ("#EB5757", round(0.15 * 255))}
 
 
 def _clean(c: dict) -> Theme:
     return Theme(
         name=CLEAN, label="[ CLEAN ]", colors=c,
         badges={
-            "full": (c["TEXT"], c["TEXT"], 0, False, None, "check"),
-            "partial": (c["AMBER"], c["AMBER"], 0, False),
-            "none": (c["RED"], c["RED"], 0, False),
-            "accent": (c["SILVER"], c["BORDER_HOVER"], 0, False, c["SILVER_FILL"]),   # "To update"
-            "uptodate": (c["SLATE"], c["BORDER"], 0, False),
-            "busy": (c["MUTED_DIM"], c["BORDER"], 0, False),
-            "ok": (c["TEXT"], c["MUTED"], 0, False, c["SILVER_FILL"], "check"),     # "Installed"
-            "warn": (c["AMBER"], c["AMBER_BORDER"], 0, False),
-            "alert": (c["RED"], c["RED_BORDER"], 0, False),
+            "full": (c["GREEN"], c["GREEN"], 0, False, _TINT["full"], "check"),
+            "partial": (c["AMBER"], c["AMBER"], 0, False, _TINT["partial"]),
+            "none": (c["RED"], c["RED"], 0, False, _TINT["none"]),
+            "accent": (c["ACCENT_SOFT"], c["ACCENT_SOFT"], 0, False, _TINT["accent"]),      # "To update"
+            "uptodate": (c["SLATE"], c["HEADER"], 0, False, c["HEADER"]),
+            "busy": (c["MUTED"], c["BORDER"], 0, False, c["HEADER"]),
+            "ok": (c["GREEN"], c["GREEN"], 0, False, _TINT["full"], "check"),               # "Installed"
+            "warn": (c["AMBER"], c["AMBER_BORDER"], 0, False, _TINT["partial"]),
+            "alert": (c["RED"], c["RED_BORDER"], 0, False, _TINT["none"]),
         },
         fonts=("Segoe UI Variable Text", "Segoe UI", "Inter", "Roboto", "Cantarell", "Noto Sans", "Ubuntu"),
         mono_fonts=("Cascadia Mono", "Consolas", "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono"),
-        radius=6, badge_radius=10, uppercase=True, letter_spacing=0.8, title_pt=14, title_spacing=1, row_height=52,
-        header_labels={"log": "Log", "rescan": "Rescan"},
+        radius=8, badge_radius=11, uppercase=True, letter_spacing=0.6, title_pt=14, title_spacing=1, row_height=52,
+        header_labels={"log": "Log", "rescan": "Rescan"}, panel_radius=12, badge_height=22,
     )
 
 
@@ -213,14 +218,13 @@ def stylesheet() -> str:
     r = t.radius
     bold = "700" if fam not in FONT_SCALE else "400"
     caps_header = "font-weight: 700;" if not t.uppercase else f"font-weight: {bold};"
-    metal = _metallic(c) if t.name == CLEAN else None
-    header_bg = (f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c['HEADER_TOP']}, stop:1 {c['HEADER_BOTTOM']})"
-                 if metal else c["SURFACE"])
-    # Progress bar: Matrix = neon fill on the black track; Clean = brushed platinum on gunmetal.
-    bar_track = c["SURFACE"] if metal else c["BG"]
-    bar_fill = (f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c['PLATINUM_TOP']}, stop:1 {c['PLATINUM_BOTTOM']})"
-                if metal else c["ACCENT"])
-    bar_r = min(r, 4)
+    metal = _carbon(c, t) if t.name == CLEAN else None      # Clean's own rules, after the shared ones
+    header_bg = c["HEADER"] if metal else c["SURFACE"]
+    # Progress bar: Matrix = neon fill on the black track; Clean = orange in a rounded carbon track.
+    bar_track = c["HEADER"] if metal else c["BG"]
+    bar_fill = c["ACCENT"]
+    bar_r = 4 if metal else 0
+    pr = t.panel_radius
     return f"""
 * {{ font-family: '{fam}'; font-size: {pt(10)}; color: {c['TEXT']}; }}
 QMainWindow, QWidget#root, QDialog, QMessageBox {{ background: {c['BG']}; }}
@@ -235,13 +239,13 @@ QLabel#statusline[kind="error"] {{ color: {c['RED']}; }}
 QLabel#statusline[kind="warn"] {{ color: {c['AMBER']}; }}
 QLabel#statusline[kind="ok"] {{ color: {c['GREEN']}; }}
 QProgressBar#progress {{ background: {bar_track}; border: 1px solid {c['BORDER']}; border-radius: {bar_r}px; }}
-QProgressBar#progress::chunk {{ background: {bar_fill}; border-radius: {max(bar_r - 1, 0)}px; }}
+QProgressBar#progress::chunk {{ background: {bar_fill}; border-radius: {bar_r}px; }}
 QLabel#counter {{ color: {c['TEXT'] if not metal else c['MUTED']}; font-family: '{fam if metal else mono}';
                  font-size: {pt(9, not metal)}; }}
 
-QTableView {{ background: {c['SURFACE']}; border: 1px solid {c['BORDER']}; border-radius: {r}px; outline: 0;
+QTableView {{ background: {c['SURFACE']}; border: 1px solid {c['BORDER']}; border-radius: {pr}px; outline: 0;
              gridline-color: transparent; selection-background-color: {c['SURFACE_SELECTED']}; }}
-QHeaderView {{ background: {c['SURFACE']}; border: none; border-top-left-radius: {r}px; border-top-right-radius: {r}px; }}
+QHeaderView {{ background: {header_bg}; border: none; border-top-left-radius: {pr}px; border-top-right-radius: {pr}px; }}
 QHeaderView::section {{ background: {header_bg}; color: {c['MUTED_DIM'] if metal is None else c['MUTED']}; border: none;
                         border-bottom: 1px solid {c['BORDER']}; padding: 7px 12px; font-size: {pt(8)}; {caps_header}
                         letter-spacing: {0.8 if metal else 0}px; }}
@@ -262,6 +266,16 @@ QPushButton#ghost {{ background: transparent; border: 1px solid transparent; col
                     padding: 4px 8px; font-size: {pt(9)}; }}
 QPushButton#ghost:hover, QPushButton#ghost:checked {{ color: {c['ACCENT']}; border-color: {c['BORDER']}; }}
 QPushButton#ghost:disabled {{ color: {c['BORDER']}; }}
+/* header controls (LOG, theme toggle, RESCAN): one height, one padding, a 1px border */
+QPushButton#headerButton {{ background: {c['BG'] if not metal else c['SURFACE']}; color: {c['MUTED']};
+                           border: 1px solid {c['BORDER']}; border-radius: {r}px; padding: {'3px 12px' if not metal else '6px 14px'};
+                           font-size: {pt(9)}; min-height: {16 if not metal else 18}px; }}
+QPushButton#headerButton:hover {{ color: {c['ACCENT']}; border-color: {c['ACCENT']}; }}
+QPushButton#headerButton:checked {{ color: {c['ON_ACCENT'] if metal else c['ACCENT']};
+                                   background: {c['ACCENT'] if metal else c['SURFACE_SELECTED']}; border-color: {c['ACCENT']}; }}
+QPushButton#headerButton:pressed {{ background: {c['SURFACE_SELECTED']}; }}
+QPushButton#headerButton:disabled {{ color: {c['DISABLED']}; border-color: {c['BORDER_DIM']}; }}
+QPushButton#headerButton:focus {{ border-color: {c['FOCUS']}; }}
 
 QCheckBox {{ color: {c['MUTED']}; spacing: 8px; }}
 QCheckBox:hover {{ color: {c['ACCENT']}; }}
@@ -273,7 +287,8 @@ QCheckBox::indicator:checked {{ background: {c['ACCENT']}; border-color: {c['ACC
 QCheckBox::indicator:indeterminate {{ background: {c['MUTED_DIM']}; border-color: {c['MUTED']}; }}
 QCheckBox::indicator:disabled {{ border-color: {c['BORDER']}; background: {c['BG']}; }}
 
-QPlainTextEdit#log {{ background: {c['BG']}; border: 1px solid {c['BORDER']}; border-radius: {r}px;
+QPlainTextEdit#log {{ background: {c['BG'] if not metal else c['SURFACE']}; border: 1px solid {c['BORDER']};
+                     border-radius: {pr}px; padding: 4px 6px;
                      color: {c['MUTED_DIM']}; font-family: '{mono}'; font-size: {pt(8, True)};
                      selection-background-color: {c['SURFACE_SELECTED']}; }}
 
@@ -303,32 +318,44 @@ QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
 """
 
 
-def _metallic(c: dict) -> str:
-    """Clean only, after the shared rules (so these win): brushed-steel borders that brighten on
-    hover, a gradient header, and the primary action as a brushed-platinum button."""
-    plate = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c['PLATINUM_TOP']}, stop:1 {c['PLATINUM_BOTTOM']})"
-    plate_hover = "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #F7F9FC, stop:1 #D3D9E2)"
-    plate_down = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c['PLATINUM_BOTTOM']}, stop:1 {c['PLATINUM_TOP']})"
+ICONS = Path(__file__).resolve().parent / "assets" / "icons"
+
+
+def _icon(name: str) -> str:
+    """Path for a stylesheet url(): forward slashes on every platform; Qt picks name@2x.png on
+    high-DPI screens by itself."""
+    return (ICONS / f"{name}.png").as_posix()
+
+
+def _carbon(c: dict, t: Theme) -> str:
+    """Clean only, after the shared rules (so these win): orange primary action, focus and
+    checked states; rounded geometry (8 px controls, 12 px panels, 5 px checkboxes)."""
+    r = t.radius
     return f"""
-QHeaderView {{ background: {c['HEADER_BOTTOM']}; }}
-QPushButton {{ background: {c['SURFACE']}; color: {c['MUTED']}; border: 1px solid {c['BORDER']}; }}
+QHeaderView::section:first {{ border-top-left-radius: {t.panel_radius - 1}px; }}
+QHeaderView::section:last {{ border-top-right-radius: {t.panel_radius - 1}px; }}
+QPushButton {{ background: {c['SURFACE']}; color: {c['MUTED']}; border: 1px solid {c['BORDER']}; border-radius: {r}px; }}
 QPushButton:hover {{ color: {c['TEXT']}; border-color: {c['BORDER_HOVER']}; background: {c['SURFACE_HOVER']}; }}
-QPushButton:focus {{ border-color: {c['BORDER_HOVER']}; }}
-QPushButton#primary {{ background: {plate}; color: {c['ON_ACCENT']}; font-weight: 700;
-                      border: 1px solid {c['PLATINUM_EDGE']}; border-top: 1px solid {c['PLATINUM_HIGHLIGHT']}; }}
-QPushButton#primary:hover {{ background: {plate_hover}; border-color: {c['PLATINUM_BOTTOM']};
-                            border-top: 1px solid {c['PLATINUM_HIGHLIGHT']}; }}
-QPushButton#primary:pressed {{ background: {plate_down}; border-top: 1px solid {c['PLATINUM_EDGE']}; }}
-QPushButton#primary:focus {{ border: 1px solid {c['FOCUS']}; border-top: 1px solid {c['PLATINUM_HIGHLIGHT']}; }}
-QPushButton#primary:disabled {{ background: {c['SURFACE']}; color: {c['DISABLED']}; border: 1px solid {c['BORDER']}; }}
+QPushButton:focus {{ border-color: {c['FOCUS']}; }}
+QPushButton#primary {{ background: {c['ACCENT']}; color: {c['ON_ACCENT']}; font-weight: 700; border-radius: {r}px;
+                      padding: 10px 20px; border: 1px solid {c['ACCENT']}; border-top: 1px solid {c['ACCENT_HOVER']}; }}
+QPushButton#primary:hover {{ background: {c['ACCENT_HOVER']}; border-color: {c['ACCENT_HOVER']};
+                            border-top: 1px solid #FFA06B; }}
+QPushButton#primary:pressed {{ background: {c['ACCENT_PRESSED']}; border-color: {c['ACCENT_PRESSED']}; }}
+QPushButton#primary:focus {{ border: 1px solid #FFC29E; }}
+QPushButton#primary:disabled {{ background: {c['DISABLED_FILL']}; color: {c['DISABLED']}; border: 1px solid {c['DISABLED_FILL']}; }}
 QPushButton#ghost:hover, QPushButton#ghost:checked {{ color: {c['TEXT']}; border-color: {c['BORDER_HOVER']}; }}
-QTableView {{ border-color: {c['BORDER']}; }}
+QPushButton#headerButton:hover {{ color: {c['TEXT']}; border-color: {c['BORDER_HOVER']}; background: {c['SURFACE_HOVER']}; }}
+QPushButton#headerButton:checked {{ color: {c['ON_ACCENT']}; background: {c['ACCENT']}; border-color: {c['ACCENT']}; }}
 QTableView:hover {{ border-color: {c['BORDER_HOVER']}; }}
 QCheckBox:hover {{ color: {c['TEXT']}; }}
-QCheckBox::indicator {{ border-color: {c['BORDER_HOVER']}; background: {c['BG']}; }}
-QCheckBox::indicator:hover {{ border-color: {c['MUTED']}; }}
-QCheckBox::indicator:checked {{ background: {plate}; border-color: {c['PLATINUM_EDGE']}; }}
-QFrame#popover {{ border-color: {c['BORDER_HOVER']}; }}
-QToolTip {{ border-color: {c['BORDER_HOVER']}; }}
+QCheckBox::indicator {{ border-radius: 5px; border-color: {c['BORDER_HOVER']}; background: {c['BG']}; }}
+QCheckBox::indicator:hover {{ border-color: {c['ACCENT']}; }}
+QCheckBox::indicator:checked {{ background: {c['ACCENT']}; border-color: {c['ACCENT']}; image: url("{_icon('check')}"); }}
+QCheckBox::indicator:indeterminate {{ background: {c['ACCENT']}; border-color: {c['ACCENT']}; image: url("{_icon('dash')}"); }}
+QCheckBox::indicator:focus {{ border-color: {c['FOCUS']}; }}
+QFrame#popover {{ border-color: {c['BORDER_HOVER']}; border-radius: {t.panel_radius}px; }}
+QToolTip {{ border-color: {c['BORDER_HOVER']}; border-radius: {r}px; }}
+QDialog#confirm QPlainTextEdit {{ border-radius: {t.panel_radius}px; }}
 QScrollBar::handle:vertical:hover {{ background: {c['BORDER_HOVER']}; }}
 """

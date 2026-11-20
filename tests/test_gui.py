@@ -432,26 +432,52 @@ def test_open_popover_is_closed_on_theme_change(window):
     assert win.popover is None
 
 
-def test_clean_theme_is_metallic_monochrome():
+def _rule(sheet: str, selector: str, last: bool = True) -> str:
+    i = sheet.rindex(selector + " {") if last else sheet.index(selector + " {")
+    return sheet[i:sheet.index("}", i)]
+
+
+def test_clean_theme_is_warm_carbon_with_orange_and_rounded_geometry():
     assert theme.resolve("clean") is theme.CLEAN_THEME and theme.resolve("matrix") is theme.MATRIX_THEME
     t = theme.set_current("clean")
     try:
         c = t.colors
-        assert (c["BG"], c["SURFACE"], c["BORDER"], c["BORDER_HOVER"]) == ("#0D0F12", "#15181E", "#2B313C", "#4A5364")
-        assert (c["TEXT"], c["MUTED"], c["SLATE"]) == ("#F4F6F9", "#8C95A4", "#565E6B")
+        assert (c["BG"], c["SURFACE"], c["HEADER"], c["BORDER"], c["BORDER_HOVER"]) == \
+            ("#111317", "#181B21", "#1E222A", "#2A2F3A", "#3D4452")
+        assert (c["ACCENT"], c["ACCENT_HOVER"], c["ACCENT_PRESSED"]) == ("#FF6B1A", "#FF823B", "#E0580C")
         sheet = theme.stylesheet()
-        # gradient header, brushed-platinum primary button with dark bold text and a top highlight
-        assert "stop:0 #1D2129, stop:1 #14171D" in sheet
-        primary = sheet[sheet.rindex("QPushButton#primary {"):]
-        assert "stop:0 #E8ECF2, stop:1 #C2C9D4" in primary and "color: #0D0F12" in primary
-        assert "font-weight: 700" in primary and "border-top: 1px solid #FFFFFF" in primary
+        primary = _rule(sheet, "QPushButton#primary")
+        assert "background: #FF6B1A" in primary and "color: #FFFFFF" in primary and "font-weight: 700" in primary
+        assert "border-radius: 8px" in primary and "padding: 10px 20px" in primary and "border-top: 1px solid #FF823B" in primary
+        assert "background: #FF823B" in _rule(sheet, "QPushButton#primary:hover")
+        assert "background: #E0580C" in _rule(sheet, "QPushButton#primary:pressed")
+        disabled = _rule(sheet, "QPushButton#primary:disabled")
+        assert "background: #232730" in disabled and "color: #5A6270" in disabled
+        header = _rule(sheet, "QPushButton#headerButton", last=False)
+        assert "border-radius: 8px" in header and "padding: 6px 14px" in header and "border: 1px solid #2A2F3A" in header
+        assert "border-radius: 12px" in _rule(sheet, "QTableView", last=False)
+        assert "border-radius: 12px" in _rule(sheet, "QPlainTextEdit#log")
+        indicator = _rule(sheet, "QCheckBox::indicator")
+        assert "border-radius: 5px" in indicator
+        checked = _rule(sheet, "QCheckBox::indicator:checked")
+        assert "background: #FF6B1A" in checked and "check.png" in checked
+        bar = _rule(sheet, "QProgressBar#progress")
+        assert "background: #1E222A" in bar and "border-radius: 4px" in bar
+        chunk = _rule(sheet, "QProgressBar#progress::chunk")
+        assert "background: #FF6B1A" in chunk and "border-radius: 4px" in chunk
         assert "Segoe UI" in t.fonts and "VT323" not in sheet
+        # pills: full pill shape, semantic colours and tints
+        assert (t.badge_radius, t.badge_height) == (11, 22)
         b = t.badges
-        assert b["accent"][0] == "#E4E8EF" and b["accent"][4] == "#232832"          # TO UPDATE
-        assert b["uptodate"][0] == "#565E6B"                                       # UP TO DATE
-        assert b["full"][:2] == ("#F4F6F9", "#F4F6F9") and b["full"][5] == "check"  # FULL, outlined, tick
-        assert b["partial"][1] == "#C8B99A" and c["AMBER"] == "#C8B99A"            # PARTIAL and its (?)
-        assert b["none"][0] == "#D47A7A"                                           # NONE
+        assert b["accent"][:2] == ("#FF8534", "#FF8534") and b["accent"][4] == ("#FF6B1A", 41)     # TO UPDATE, 16 %
+        assert b["uptodate"][0] == "#6E7787" and b["uptodate"][4] == "#1E222A"                   # UP TO DATE
+        assert b["full"][:2] == ("#3DD68C", "#3DD68C") and b["full"][4] == ("#2ECC71", 36)      # FULL, 14 %
+        assert b["partial"][:2] == ("#F5B041", "#F5B041") and b["partial"][4] == ("#F5B041", 38)
+        assert b["none"][:2] == ("#EB5757", "#EB5757") and b["none"][4] == ("#EB5757", 38)
+        for name in ("check.png", "check@2x.png", "dash.png", "dash@2x.png"):
+            assert (theme.ICONS / name).is_file()
+        spec = (__import__("pathlib").Path(__file__).resolve().parents[1] / "packaging" / "windows" / "driver-installer.spec").read_text()
+        assert '"ui", "assets", "icons"' in spec                       # bundled into DriverInstaller.exe
         assert theme.badge_text("To update") == "TO UPDATE"
     finally:
         theme.set_current("matrix")
@@ -504,3 +530,86 @@ def test_confirmation_with_many_partial_drivers_fits_the_screen(window, theme_na
         dlg.close()
         if theme.current().name != "matrix":
             win.toggle_theme()
+
+
+# --------------------------------------------------------- layout polish
+def test_long_status_is_elided_and_never_touches_the_counter(window):
+    app, win, _ = window
+    win.resize(760, 520)
+    win.show()
+    win.progress_count(1, 5)
+    long = "Downloading and verifying 1 / 5: HP Inc. - SoftwareComponent - HP Application Driver Update " * 2
+    win.say(long)
+    app.processEvents()
+    assert win.status.text() == "> " + long                                   # text(): the full message
+    shown = win.status.shown_text()
+    assert shown.endswith("…") and len(shown) < len(win.status.text())
+    assert win.status.toolTip() == win.status.text()
+    status_right = win.status.geometry().right()
+    assert win.counter.geometry().left() - status_right >= 14                 # explicit gap before "1 / 5"
+    assert win.status.fontMetrics().horizontalAdvance(shown) <= win.status.width()
+    win.say("Ready.")
+    app.processEvents()
+    assert win.status.shown_text().endswith("Ready.") and win.status.toolTip() == ""
+
+
+@pytest.mark.parametrize("name", ["matrix", "clean"])
+def test_header_controls_share_one_style_and_height(window, name):
+    app, win, _ = window
+    if theme.current().name != name:
+        win.toggle_theme()
+    win.show()
+    app.processEvents()
+    buttons = (win.btn_log, win.btn_theme, win.btn_rescan)
+    assert {b.objectName() for b in buttons} == {"headerButton"}
+    assert len({b.height() for b in buttons}) == 1
+    assert len({b.geometry().center().y() for b in buttons}) == 1             # same vertical alignment
+    rule = _rule(theme.stylesheet(), "QPushButton#headerButton", last=False)
+    assert "border: 1px solid" in rule
+    assert "QPushButton#headerButton:hover" in theme.stylesheet()
+    assert all(b.focusPolicy() == Qt.TabFocus for b in buttons) and win.view.hasFocus()
+    if name != "matrix":
+        win.toggle_theme()
+
+
+def test_row_spinners_line_up_in_one_column_centred_on_the_pill():
+    from PySide6.QtCore import QRect, QRectF
+    from PySide6.QtGui import QColor, QImage, QPainter
+    from ui import delegates
+    for name in ("matrix", "clean"):
+        theme.set_current(name)
+        cell = QRect(500, 100, 190, theme.current().row_height)
+        rects = {delegates.BadgeDelegate.spinner_rect(cell, text) for text in ("Queued", "Scanning…", "Checking…")}
+        assert len(rects) == 1                                                  # same x whatever the pill says
+        (spin,) = rects
+        widest = max(delegates.BadgeDelegate.badge_rect(cell, t).right() for t in delegates.LOADING_TEXTS)
+        assert spin.left() - widest >= delegates.SPIN_GAP - 1
+        assert abs(spin.center().y() - delegates.BadgeDelegate.badge_rect(cell, "Queued").center().y()) <= 1
+        for step in range(4):                                                   # each frame's ink is centred
+            img = QImage(40, 40, QImage.Format_ARGB32)
+            img.fill(0)
+            p = QPainter(img)
+            delegates.paint_spinner(p, QRectF(13, 13, 14, 14), step, QColor("#00FF66"))
+            p.end()
+            rows = [y for y in range(40) if any(img.pixelColor(x, y).alpha() > 60 for x in range(40))]
+            assert abs((rows[0] + rows[-1]) / 2 - 19.5) <= 0.5, (name, step)
+    theme.set_current("matrix")
+
+
+def test_clean_rows_are_clipped_to_the_rounded_table(window):
+    app, win, _ = window
+    win.show()
+    app.processEvents()
+    port = win.view.viewport()
+    assert port.mask().isEmpty()                                                 # Matrix: square corners
+    win.toggle_theme()
+    app.processEvents()
+    mask, r = port.mask(), port.rect()
+    assert not mask.isEmpty()
+    assert not mask.contains(r.bottomLeft()) and not mask.contains(r.bottomRight())
+    assert mask.contains(r.center()) and mask.contains(r.topLeft())
+    win.resize(win.width() + 40, win.height() + 30)                              # follows resizes
+    app.processEvents()
+    assert win.view.viewport().mask().boundingRect().width() == port.width()
+    win.toggle_theme()
+    assert port.mask().isEmpty()

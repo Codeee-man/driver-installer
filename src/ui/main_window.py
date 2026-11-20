@@ -15,10 +15,11 @@ import functools
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QModelIndex, Qt
+from PySide6.QtCore import QEvent, QModelIndex, Qt
+from PySide6.QtGui import QPainterPath, QRegion
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFrame, QGridLayout, QHBoxLayout,
                                QHeaderView, QLabel, QMainWindow, QPlainTextEdit, QProgressBar, QPushButton,
-                               QTableView, QVBoxLayout, QWidget)
+                               QSizePolicy, QTableView, QVBoxLayout, QWidget)
 
 from core import common, engine
 from core.common import ElevationError
@@ -29,6 +30,43 @@ from .popover import ChecksPopover
 from .workers import ScanWorker, Worker
 
 TITLE = "Driver Installer"
+
+
+class ElidedLabel(QLabel):
+    """One-line label that shortens its text with "…" at the end instead of clipping it
+    mid-word or pushing its neighbours aside. text() is always the full text, which also shows
+    as the tooltip whenever it is shortened."""
+
+    def __init__(self, text: str = "", **kw):
+        super().__init__(**kw)
+        self._full = ""
+        self.setMinimumWidth(40)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:
+        self._full = text
+        self._elide()
+
+    def text(self) -> str:
+        return self._full
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._elide()
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self._elide()
+
+    def _elide(self) -> None:
+        shown = self.fontMetrics().elidedText(self._full, Qt.ElideRight, max(self.width(), 1))
+        super().setText(shown)
+        self.setToolTip(self._full if shown != self._full else "")
+
+    def shown_text(self) -> str:
+        return super().text()
 
 
 class DriverView(QTableView):
@@ -74,12 +112,15 @@ class MainWindow(QMainWindow):
         header = QGridLayout()
         header.setColumnStretch(0, 1)
         header.setColumnStretch(2, 1)
-        self.btn_log = QPushButton("LOG", objectName="ghost", checkable=True, toolTip="Show the activity log")
+        self.btn_log = QPushButton("LOG", objectName="headerButton", checkable=True, toolTip="Show the activity log")
         self.title = QLabel(TITLE, objectName="title", alignment=Qt.AlignCenter)
-        self.btn_theme = QPushButton(objectName="ghost")
-        self.btn_rescan = QPushButton("RESCAN", objectName="ghost", toolTip="Scan hardware and check for updates again")
+        self.btn_theme = QPushButton(objectName="headerButton")
+        self.btn_rescan = QPushButton("RESCAN", objectName="headerButton", toolTip="Scan hardware and check for updates again")
+        for b in (self.btn_log, self.btn_theme, self.btn_rescan):
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFocusPolicy(Qt.TabFocus)          # a click does not leave a focus ring; Tab still reaches it
         right = QHBoxLayout()
-        right.setSpacing(4)
+        right.setSpacing(8)
         right.addWidget(self.btn_theme)
         right.addWidget(self.btn_rescan)
         header.addWidget(self.btn_log, 0, 0, Qt.AlignLeft | Qt.AlignVCenter)
@@ -115,6 +156,7 @@ class MainWindow(QMainWindow):
         self.view.setItemDelegateForColumn(COL_VERIFY, self.badges)
         self.view.setItemDelegateForColumn(COL_SELECT, CheckDelegate(self.view))
         self.view.setAccessibleName("Devices and driver updates")
+        self.view.viewport().installEventFilter(self)          # keeps the rounded clip in step with its size
         layout.addWidget(self.view, 1)
 
         self.log = QPlainTextEdit(objectName="log", readOnly=True, maximumBlockCount=800)
@@ -124,15 +166,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.log)
 
         # bottom bar: status line with the progress bar beside it, then the actions
-        self.status = QLabel(objectName="statusline")
-        self.status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.status = ElidedLabel(objectName="statusline")
         self.counter = QLabel(objectName="counter")
+        self.counter.setMinimumWidth(1)
         self.progress = QProgressBar(objectName="progress", textVisible=False)
         self.progress.setFixedSize(220, 10)
         self.progress.setAccessibleName("Progress")
         status_row = QHBoxLayout()
         status_row.setSpacing(10)
         status_row.addWidget(self.status, 1)
+        status_row.addSpacing(14)                              # the elided message never touches "1 / 5"
         status_row.addWidget(self.counter)
         status_row.addWidget(self.progress, 0, Qt.AlignVCenter)
         layout.addLayout(status_row)
@@ -156,6 +199,7 @@ class MainWindow(QMainWindow):
         self.badges.helpRequested.connect(self.show_popover)
         self.model.selectionChanged.connect(self.update_controls)
         self.model.spinningChanged.connect(self.spinner.set_running)
+        self.view.setFocus()                       # start in the list, not on the first header button
         self._listener = self._log_record
         common.audit_log().listeners.append(self._listener)
         self.say("Ready.")
@@ -187,6 +231,7 @@ class MainWindow(QMainWindow):
         for widget in (self.status, self.title):
             widget.style().unpolish(widget)
             widget.style().polish(widget)
+        self.round_table()
         self.view.viewport().update()
         self.view.horizontalHeader().viewport().update()
         if save:
@@ -236,6 +281,30 @@ class MainWindow(QMainWindow):
             if not self.busy:
                 self.progress_idle()
             self.update_controls()
+
+    # ------------------------------------------------------------ geometry
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self.view.viewport() and event.type() == QEvent.Resize:
+            self.round_table()
+        return super().eventFilter(obj, event)
+
+    def round_table(self) -> None:
+        """Clip the rows to the table's rounded bottom corners (Clean: 12 px), so a hovered or
+        selected last row does not paint square corners over the border."""
+        port, radius = self.view.viewport(), theme.current().panel_radius - 1
+        if radius <= 2:
+            port.clearMask()
+            return
+        r = port.rect()
+        path = QPainterPath()
+        path.moveTo(r.left(), r.top())
+        path.lineTo(r.right() + 1, r.top())
+        path.lineTo(r.right() + 1, r.bottom() + 1 - radius)
+        path.quadTo(r.right() + 1, r.bottom() + 1, r.right() + 1 - radius, r.bottom() + 1)
+        path.lineTo(r.left() + radius, r.bottom() + 1)
+        path.quadTo(r.left(), r.bottom() + 1, r.left(), r.bottom() + 1 - radius)
+        path.closeSubpath()
+        port.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
     # ---------------------------------------------------------- progress
     def progress_pulse(self) -> None:

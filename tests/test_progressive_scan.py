@@ -281,7 +281,7 @@ def test_install_pulses_the_progress_bar_until_it_finishes(tmp_path, windows, ru
 # ------------------------------------------------------------------- theme
 @pytest.mark.parametrize("name, track, fill, border", [
     ("matrix", "#050505", "#00FF66", "#1A3320"),
-    ("clean", "#15181E", "stop:0 #E8ECF2, stop:1 #C2C9D4", "#2B313C")])
+    ("clean", "#1E222A", "#FF6B1A", "#2A2F3A")])
 def test_progress_bar_is_styled_per_theme(tmp_path, name, track, fill, border):
     gui.create(engine.Context(manifest={"packages": []}), tmp_path)
     theme.set_current(name)
