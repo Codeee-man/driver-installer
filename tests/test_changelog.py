@@ -49,3 +49,13 @@ def test_release_job_puts_the_notes_above_the_downloads():
     assert "actions/checkout@v4" in job and "CHANGELOG.md" in job
     assert 'python3 tools/changelog.py "$TAG" > changelog-notes.md' in job
     assert job.index("## What's changed") < job.index("cat ../changelog-notes.md") < job.index('echo "## Downloads"')
+
+
+def test_cli_writes_utf8_even_on_a_legacy_windows_code_page(tmp_path):
+    f = tmp_path / "CHANGELOG.md"
+    f.write_text("## [1.2.3] - 2027-01-01\n\nScan → Review → Apply\n", encoding="utf-8")
+    env = {**__import__("os").environ, "PYTHONIOENCODING": "cp1250"}      # what Windows Git Bash gave
+    res = subprocess.run([sys.executable, str(ROOT / "tools" / "changelog.py"), "v1.2.3", "--file", str(f)],
+                         capture_output=True, env=env)
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.decode("utf-8").strip() == "Scan → Review → Apply"

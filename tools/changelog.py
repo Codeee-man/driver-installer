@@ -49,6 +49,10 @@ def main(argv=None) -> int:
     ap.add_argument("version")
     ap.add_argument("--file", type=Path, default=ROOT / "CHANGELOG.md")
     args = ap.parse_args(argv)
+    # The notes contain characters such as "→"; Windows consoles default to a code page that
+    # cannot print them (cp1250, cp1252...). Always write UTF-8, which gh and GitHub expect.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     try:
         notes, exact = notes_for(args.version, args.file.read_text(encoding="utf-8"))
     except (LookupError, OSError) as exc:
