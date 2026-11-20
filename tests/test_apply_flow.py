@@ -209,7 +209,7 @@ def test_helper_rejects_packages_missing_from_the_manifest_and_bad_plans(win_env
         plan_path.write_text(json.dumps(bad))
         assert engine.execute_plan(plan_path)["status"] == "refused"
     assert installed(win_env) == []
-    assert sorted(p.name for p in (win_env.tmp / "system" / "results").iterdir()) == [f"{plan['plan_id']}.json"]
+    assert sorted(p.name for p in (win_env.tmp / "system" / "results").iterdir()) == [f"{plan['plan_id']}.json", f"{plan['plan_id']}.log"]
 
 
 def test_catalog_from_another_publisher_stops_the_install(win_env, as_admin):

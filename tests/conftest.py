@@ -137,15 +137,27 @@ def authenticode_json(subject="CN=Intel Corporation, O=Intel Corporation, L=Sant
 WUA_EMPTY = json.dumps({"policy": None, "updates": [], "error": None, "resultCode": 2})
 
 
-def wua_fetch_result(error=None, hresult=None, stage="copy", cab: bytes | None = b"MSCF" + b"\0" * 512):
-    """Stand-in for windows_update._FETCH_SCRIPT: writes the .cab into SD_DEST like
-    IUpdate2.CopyFromCache would, or reports the error the agent raised."""
+WUA_CAB = {"8f1d0c2e3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d": b"MSCF" + b"\0" * 512}   # cache name: no extension
+WUA_CAB_NAMED = {"hpcustomcapext.cab": b"MSCF" + b"\0" * 512}
+WUA_EXTRACTED = {"hpappdrv/hpappdrv.inf": b"[Version]\n", "hpappdrv/hpappdrv.cat": b"catalog",
+                 "hpappdrv/x64/HpAppDrv.sys": b"MZ hp app driver"}
+WUA_INSTALLER = {"HPSetup.exe": b"MZ setup program"}
+
+
+def wua_fetch_result(error=None, hresult=None, stage="copy", payload=None):
+    """Stand-in for windows_update._FETCH_SCRIPT: writes the payload into SD_DEST like
+    IUpdate2.CopyFromCache would (default: a cabinet named like the WUA cache does, without
+    .cab), or reports the error the agent raised."""
+    files_in = WUA_CAB if payload is None else payload
+
     def respond(env):
         files = []
-        if error is None and cab is not None:
-            target = Path(env["SD_DEST"]) / "8f1d0c2e3a4b_driver.cab"
-            target.write_bytes(cab)
-            files = [{"path": str(target), "size": len(cab)}]
+        if error is None:
+            for rel, data in files_in.items():
+                target = Path(env["SD_DEST"]) / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+                files.append({"path": str(target), "size": len(data)})
         return json.dumps({"files": files, "error": error, "hresult": hresult, "stage": stage if error else "copy",
                            "downloaded": error is None})
     return respond

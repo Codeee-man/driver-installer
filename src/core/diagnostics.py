@@ -14,7 +14,9 @@ import json
 
 # Events shown by --debug (prefix match). Everything is still in the audit log.
 DEBUG_PREFIXES = ("scan.", "wmi.", "catalog.", "wua.", "discovery.", "drivers.", "fwupd.", "blocklist.",
-                  "verify.", "signature.", "net.", "exec", "plan", "restore.", "install.", "helper.", "elevation.")
+                  "verify.", "signature.", "net.", "exec", "plan", "restore.", "install.", "helper.", "elevation.",
+                  "apply.", "elevated.")
+ELEVATED = "elevated."          # events the administrator run recorded, replayed by engine.forward_helper_log
 
 
 def _skips(skipped: dict) -> str:
@@ -52,6 +54,16 @@ def describe(rec: dict) -> list[str]:
     if event == "discovery.windows":
         return [f"discovery: Windows Update {data.get('windows_update')}, catalog {data.get('catalog')}, "
                 f"{data.get('chosen')} update(s) after taking the newest per device"]
+    if event == "helper.refused":
+        return [f"REFUSED {data.get('name') or data.get('item')}", f"  {data.get('reason')}"]
+    if event == "helper.done":
+        return [f"elevated run finished: {data.get('status')}" + (f" ({data.get('detail')})" if data.get("detail") else "")] + \
+               [f"  {line}" for line in data.get("items") or []]
+    if event == "helper.wua_acquired":
+        return [f"Windows Update handed over {data.get('name')}: {data.get('files')} file(s), "
+                f"INF {', '.join(data.get('infs') or []) or 'none'}"]
+    if event == "helper.crashed":
+        return [f"elevated run stopped with an internal error: {data.get('error')}"]
     if event == "verify.failed":
         step = data.get("step")
         return [f"{data.get('update')} ({data.get('source')}): verification FAILED"
@@ -73,7 +85,16 @@ def describe(rec: dict) -> list[str]:
 
 
 def format_record(rec: dict, with_time: bool = True) -> str:
-    head, *rest = describe(rec)
+    event = rec.get("event", "")
+    if event.startswith(ELEVATED):
+        inner = {**rec, "event": event[len(ELEVATED):],
+                 "data": {k: v for k, v in (rec.get("data") or {}).items() if k != "helper_ts"}}
+        head, *rest = describe(inner)
+        head = "[admin] " + head
+        ts = str((rec.get("data") or {}).get("helper_ts") or rec.get("ts", ""))
+        rec = {**rec, "ts": ts, "event": inner["event"]}
+    else:
+        head, *rest = describe(rec)
     prefix = f"{rec.get('ts', '')[11:19]}  " if with_time else ""
     lines = [f"{prefix}{rec.get('event', ''):<22} {head}"]
     pad = " " * (len(prefix) + 23)

@@ -88,6 +88,35 @@ jobs:
           # no arguments = the GUI (here with --demo --screenshot through the gui subcommand)
           $p = Start-Process $exe -ArgumentList 'gui', '--demo', '--screenshot', "$PWD\smoke.png" -Wait -PassThru
           if ($p.ExitCode -ne 0 -or -not (Test-Path smoke.png)) { throw "GUI did not render (exit $($p.ExitCode))" }
+      - name: Elevated helper reports why it refuses a deferred Windows Update item
+        # The real --apply-plan path, as administrator, against the real Windows Update Agent:
+        # an update ID Windows does not offer must be refused with the agent's own reason,
+        # in the result and in the live log the window replays into LOG.
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path 'smoke/DriverInstaller/DriverInstaller.exe').Path
+          $id = -join (1..32 | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+          $uid = '00000000-0000-4000-8000-0000000000c1'
+          $plan = @{ plan_id = $id; allow_without_blocklist = $true; allow_without_snapshot = $true
+                     items = @(@{ discovered = @{ origin = 'windows-update'; id = "windowsupdate.$uid"; update_id = $uid
+                                                  name = 'CI deferred item'; version = '1.0'
+                                                  artifact = @{ acquire = 'windows-update-agent' } } }) }
+          $planPath = Join-Path $env:RUNNER_TEMP 'plan.json'
+          $plan | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 $planPath
+          $p = Start-Process $exe -ArgumentList '--apply-plan', $planPath -Wait -PassThru
+          $results = Join-Path $env:ProgramData 'SafeDriver\results'
+          $result = Get-Content (Join-Path $results "$id.json") -Raw | ConvertFrom-Json
+          "exit $($p.ExitCode), status $($result.status): $($result.detail)"
+          $item = $result.items[0]
+          "item: $($item.status): $($item.detail)"
+          if ($p.ExitCode -eq 0 -or $result.status -ne 'refused') { throw 'the helper should refuse this item' }
+          if ($item.detail -notmatch '^verification before installing: Windows Update download as administrator failed: Windows Update Agent') { throw "unexpected reason: $($item.detail)" }
+          $events = @(Get-Content (Join-Path $results "$id.log") | ForEach-Object { ($_ | ConvertFrom-Json).event })
+          "live log: $($events -join ', ')"
+          foreach ($e in 'helper.start', 'wua.fetch.start', 'wua.fetch.failed', 'helper.refused', 'helper.done') {
+            if ($e -notin $events) { throw "the live log lacks $e" }
+          }
+          if (@($result.log).Count -lt 5) { throw 'the result carries no log for the window' }
       - name: CLI output reaches an interactive console
         # A real console (ConPTY), nothing redirected: the windowed program must attach to the
         # console of the cmd.exe that started it and print there.

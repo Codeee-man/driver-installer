@@ -277,7 +277,7 @@ def test_confirmed_install_updates_each_row(window, monkeypatch):
     assert {u.device.name for u in got["todo"]} == {"Wifi", "Gpu"}
     badge = lambda key: win.model.index(row_of(win, ups[key]), COL_STATUS).data(BadgeRole)
     assert badge("full") == ("Restart required", "warn") and badge("full2") == ("Failed", "alert")
-    assert win.status.text() == "> 1 installed, 1 failed. Restart to finish." and win.status.property("kind") == "error"
+    assert win.status.text() == "> 1 installed, 1 failed. Restart to finish. Gpu: pnputil error 5" and win.status.property("kind") == "error"
     assert not win.model.rows[row_of(win, ups["full"])].selectable          # installed rows cannot be picked again
 
 
@@ -301,7 +301,7 @@ def test_snapshot_failure_asks_again_before_continuing(window, monkeypatch):
     answer(win, True, True)
     win.do_install()
     ui.settle(app, win)
-    assert calls == [False, False, True] and win.status.text() == "> 1 installed, 0 failed."
+    assert calls == [False, False, True] and win.status.text() == "> 1 installed."
 
 
 def test_unavailable_blocklist_asks_before_continuing_unchecked(window, monkeypatch):
@@ -323,7 +323,7 @@ def test_unavailable_blocklist_asks_before_continuing_unchecked(window, monkeypa
     answer(win, True, True)
     win.do_install()
     ui.settle(app, win)
-    assert calls[-1] == (False, True) and win.status.text() == "> 1 installed, 0 failed."
+    assert calls[-1] == (False, True) and win.status.text() == "> 1 installed."
 
 
 def test_security_alert_turns_the_row_red_with_no_way_around_it(window, monkeypatch):

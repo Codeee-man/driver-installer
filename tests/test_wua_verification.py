@@ -12,8 +12,9 @@ from pathlib import Path
 import pytest
 
 import mock_http
-from conftest import FIXTURES, authenticode_json, windows_powershell, wua_fetch_result
-from core import common, diagnostics, engine, scanner_win, verifier
+from conftest import (FIXTURES, WUA_CAB, WUA_CAB_NAMED, WUA_EXTRACTED, WUA_INSTALLER, authenticode_json,
+                      windows_powershell, wua_fetch_result)
+from core import common, diagnostics, engine, scanner_win, trust, verifier
 from core.discovery import ms_catalog, windows_update
 from core.model import Update
 from mock_http import MockCatalog
@@ -104,19 +105,36 @@ def test_http_fetch_raises_redirect_error_only_when_asked(catalog):
 
 
 # ------------------------------------------------ Windows Update Agent fallback
-def test_wua_hands_over_the_cab_and_the_driver_verifies_full(box, as_user):
+@pytest.mark.parametrize("payload", [WUA_CAB, WUA_CAB_NAMED, WUA_EXTRACTED], ids=["cache-name", "named-cab", "extracted"])
+def test_wua_payload_of_any_shape_verifies_full(box, as_user, payload):
+    """The cache hands over a cabinet without .cab, a named .cab, or loose .inf/.cat/.sys files:
+    each becomes one driver folder that is checked (LOLDrivers, catalog signer) -> Full."""
     catalog, runner = box
-    use_wua(runner, wua_fetch_result())
+    use_wua(runner, wua_fetch_result(payload=payload))
     update, ctx = hp_update(), engine.Context()
     engine.verify_update(update, ctx)
     assert update.status == "verified" and states(update) == {
-        "sha256": "passed", "manifest": "not_applicable", "blocklist": "passed", "publisher": "passed"}
+        "sha256": "passed", "manifest": "not_applicable", "blocklist": "passed", "publisher": "passed"}, update.checks
     sha = update.check("sha256").reason
     assert "downloaded by the Windows Update Agent" in sha and "302 ErrorInline.aspx (error id 2380070948)" in sha
-    assert Path(update.path).parent == ctx.quarantine and Path(update.path).read_bytes().startswith(b"MSCF")
-    assert [p.name for p in ctx.quarantine.iterdir()] == [Path(update.path).name]      # the WUA work dir is gone
-    fetch = next(env for c, env in [(c, e) for _, c, e in runner.calls] if "SD_UPDATE_ID" in env)
-    assert fetch["SD_UPDATE_ID"] == OEM
+    assert "fetches it again as administrator" in sha
+    art = update.package["artifact"]
+    assert art["acquire"] == "windows-update-agent" and art["format"] == "dir"
+    assert list(ctx.quarantine.iterdir()) == [] and update.path == ""          # the agent's folder is gone
+    assert bool(runner.ran("expand")) == (payload is not WUA_EXTRACTED)           # loose files need no expand
+    cats = [e["SD_FILE"] for _, _, e in runner.calls if "SD_FILE" in e]
+    assert cats and all(c.endswith(".cat") for c in cats)
+
+
+def test_non_driver_payload_is_none_with_the_files_named(box, as_user):
+    _, runner = box
+    use_wua(runner, wua_fetch_result(payload=WUA_INSTALLER))
+    update, ctx = hp_update(), engine.Context()
+    engine.verify_update(update, ctx)
+    reason = update.check("sha256").reason
+    assert update.status == "failed" and update.check("sha256").state == "failed"
+    assert "no driver package (.inf)" in reason and "HPSetup.exe (16 bytes)" in reason
+    assert list(ctx.quarantine.iterdir()) == []
 
 
 def test_admin_only_download_is_partial_with_both_reasons(box, as_user):
@@ -202,18 +220,25 @@ def test_wua_url_is_still_used_before_asking_the_agent(box, as_user):
     assert not [e for _, _, e in runner.calls if "SD_UPDATE_ID" in e]
 
 
-def test_fetch_package_refuses_files_outside_its_folder_and_oversized_cabs(runner, windows, tmp_path):
+def test_fetch_payload_returns_only_real_files_inside_its_folder(runner, windows, tmp_path):
+    dest = tmp_path / "dest"
     outside = tmp_path / "elsewhere.cab"
     outside.write_bytes(b"MSCF")
-    runner.on("powershell", lambda cmd, env: common.Result(0, json.dumps(
-        {"files": [{"path": str(outside), "size": 4}], "error": None})))
-    with pytest.raises(windows_update.WindowsUpdateError, match="copied no driver cabinet"):
-        windows_update.fetch_package(OEM, tmp_path / "dest", 1 << 20)
+
+    def lying(cmd, env):                                    # the script's list is not trusted
+        (Path(env["SD_DEST"]) / "real.cab").write_bytes(b"MSCF....")
+        return common.Result(0, json.dumps({"files": [{"path": str(outside), "size": 4}], "error": None}))
+    runner.on("powershell", lying)
+    assert [f.name for f in windows_update.fetch_payload(OEM, dest, 1 << 20)] == ["real.cab"]
+    runner.on("powershell", lambda cmd, env: common.Result(0, json.dumps({"files": [], "error": None})))
+    with pytest.raises(windows_update.WindowsUpdateError, match="copied no files"):
+        windows_update.fetch_payload(OEM, tmp_path / "empty", 1 << 20)
     runner.on("powershell", lambda cmd, env: common.Result(0, wua_fetch_result()(env)))
     with pytest.raises(windows_update.WindowsUpdateError, match="larger than 10 bytes"):
-        windows_update.fetch_package(OEM, tmp_path / "dest2", 10)
+        windows_update.fetch_payload(OEM, tmp_path / "dest2", 10)
     err = windows_update.WindowsUpdateError("x", "0X80240044")
     assert err.needs_admin and not windows_update.WindowsUpdateError("x", "0x80131500").needs_admin
+    assert windows_update.WindowsUpdateError("x", "0x80070005").needs_admin
 
 
 # ------------------------------------------------------------- popover
@@ -239,3 +264,144 @@ def test_popover_opens_on_none_and_leads_with_the_failure(box, as_user, tmp_path
     assert not any(t == "not reached: an earlier step failed" for t in texts)
     pop.close()
     win.close()
+
+
+# ------------------------------------------- elevated install of deferred (Partial) items
+MS_WINDOWS = authenticode_json(subject="CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US")
+
+
+def deferred(box, n=1):
+    """Partial Windows Update items, as after a scan where CopyFromCache was denied (0x80070005)."""
+    catalog, runner = box
+    use_wua(runner, wua_fetch_result(error="Exception from HRESULT: 0x80070005", hresult="0x80070005", stage="copy"))
+    ups, ctx = [], engine.Context()
+    for i in range(n):
+        u = hp_update()
+        if i:
+            uid = f"a1b2c3d4-0000-4000-8000-0000000000{i:02d}"
+            catalog.not_public.add(uid)
+            u.package.update(update_id=uid, id=f"windowsupdate.{uid}")
+        engine.verify_update(u, ctx)
+        from ui import verification as vf
+        assert vf.level(u) == "Partial" and "E_ACCESSDENIED" in u.check("sha256").reason
+        ups.append(u)
+    return ups, ctx
+
+
+@pytest.mark.parametrize("payload", [WUA_CAB, WUA_EXTRACTED], ids=["cab", "extracted"])
+def test_elevated_helper_installs_deferred_items_from_any_payload(box, as_user, monkeypatch, payload):
+    _, runner = box
+    ups, ctx = deferred(box)
+    from core import elevation
+    monkeypatch.setattr(elevation, "is_admin", lambda: True)
+    use_wua(runner, wua_fetch_result(payload=payload))
+    result = engine.apply(ups, ctx)
+    assert result["status"] == "ok", result
+    (args,) = runner.ran("pnputil")
+    assert args[0] == "/add-driver" and args[1].endswith("*.inf") and args[-1] == "/install" and "/subdirs" in args
+    assert any(e["event"] == "helper.wua_acquired" and e["data"]["infs"] for e in result["log"])
+
+
+def test_microsofts_own_drivers_from_windows_update_are_accepted(box, as_user, monkeypatch):
+    """Voice Clarity and other Microsoft drivers are signed "Microsoft Windows", not by the
+    hardware publisher: accepted for Windows Update items, still refused for catalog-only ones."""
+    _, runner = box
+    ups, ctx = deferred(box)
+    from core import elevation
+    monkeypatch.setattr(elevation, "is_admin", lambda: True)
+    runner.on("powershell", windows_powershell(signer=MS_WINDOWS, wua_fetch=wua_fetch_result()))
+    assert engine.apply(ups, ctx)["status"] == "ok"
+    with pytest.raises(engine.VerificationError, match="not the pinned publisher"):
+        verifier.verify_catalogs(_cat_dir(), trust.MS_WHQL_SUBJECT)
+
+
+def _cat_dir():
+    import tempfile
+    d = Path(tempfile.mkdtemp())
+    (d / "x.cat").write_bytes(b"catalog")
+    return d
+
+
+def test_refusals_as_administrator_reach_the_log_and_every_row_has_a_reason(box, as_user, monkeypatch):
+    """The real round trip: the unprivileged process writes the plan, "UAC" runs the helper,
+    every item is refused. The reasons are in the result, and the helper's events are replayed
+    into this process's log (what the LOG drawer shows), marked as elevated."""
+    _, runner = box
+    ups, ctx = deferred(box, n=3)
+    from core import elevation
+    runner.on("powershell", windows_powershell(signer=authenticode_json(subject="CN=Not Microsoft"),
+                                               wua_fetch=wua_fetch_result()))
+
+    def uac(argv, timeout=None):
+        monkeypatch.setattr(elevation, "is_admin", lambda: True)
+        try:
+            engine.execute_plan(Path(argv[-1]))
+        finally:
+            monkeypatch.setattr(elevation, "is_admin", lambda: False)
+        return 2
+    monkeypatch.setattr(elevation, "run_elevated", uac)
+    seen = []
+    common.audit_log().listeners.append(seen.append)
+    try:
+        result = engine.apply(ups, ctx)
+    finally:
+        common.audit_log().listeners.remove(seen.append)
+    assert result["status"] == "refused" and len(result["items"]) == 3
+    for item in result["items"]:
+        assert item["status"] == "refused" and item["name"].startswith("HP Inc.")
+        assert item["detail"].startswith("verification before installing: Authenticode check failed")
+    assert "nothing was installed (HP Inc." in result["detail"]
+    forwarded = [r for r in seen if r["event"].startswith("elevated.")]
+    events = [r["event"] for r in forwarded]
+    assert events[0] == "elevated.helper.start" and events[-1] == "elevated.helper.done"
+    assert events.count("elevated.helper.refused") == 3 and "elevated.wua.fetch.done" in events
+    lines = "\n".join(diagnostics.format_record(r) for r in forwarded)
+    assert "[admin]" in lines and "verification before installing" in lines
+    assert all(diagnostics.wants(e) for e in events)
+
+
+def test_a_crashed_helper_still_leaves_its_log(box, as_user, monkeypatch):
+    _, runner = box
+    ups, ctx = deferred(box)
+    from core import elevation
+
+    def crash(argv, timeout=None):
+        plan = json.loads(Path(argv[-1]).read_text())
+        out = common.system_state_dir() / "results"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / f"{plan['plan_id']}.log").write_text(json.dumps(
+            {"ts": "2026-11-20T13:04:00", "event": "wua.fetch.failed",
+             "data": {"update": OEM, "stage": "copy", "hresult": "0x80070005", "error": "denied"}}) + "\n")
+        return 3
+    monkeypatch.setattr(elevation, "run_elevated", crash)
+    seen = []
+    common.audit_log().listeners.append(seen.append)
+    try:
+        result = engine.apply(ups, ctx)
+    finally:
+        common.audit_log().listeners.remove(seen.append)
+    assert result["status"] == "failed" and "exited with code 3 and left no result" in result["detail"]
+    assert [r["event"] for r in seen if r["event"].startswith("elevated.")] == ["elevated.wua.fetch.failed"]
+
+
+def test_window_shows_why_each_item_was_blocked(box, as_user, tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    import gui
+    from PySide6.QtCore import Qt
+    from ui.models import COL_STATUS, BadgeRole
+    _, runner = box
+    ups, _ = deferred(box, n=2)
+    app, win = gui.create(engine.Context(manifest={"packages": []}), tmp_path)
+    win.model.load([u.device for u in ups], ups)
+    reason = "verification before installing: Authenticode check failed for hpcustomcap.cat: signer 'CN=x'"
+    win.install_done({"status": "refused", "detail": "no item passed verification, nothing was installed",
+                      "items": [{"id": engine.update_key(u), "name": u.name, "status": "refused", "detail": reason}
+                                for u in ups]})
+    app.processEvents()
+    assert win.model.index(0, COL_STATUS).data(BadgeRole)[0] == "Blocked"
+    assert win.model.index(0, COL_STATUS).data(Qt.ToolTipRole) == reason
+    assert "2 blocked" in win.status.text() and "Authenticode check failed" in win.status.text()
+    assert win.btn_log.isChecked() and reason in win.log.toPlainText()
+    win.close()
+

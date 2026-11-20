@@ -514,12 +514,26 @@ class MainWindow(QMainWindow):
             return
         items = result.get("items", [])
         self.model.apply_outcomes(items)
-        good = sum(1 for i in items if i.get("status") in ("installed", "reboot-required", "no-op"))
-        bad = len(items) - good
-        text = f"{good} installed, {bad} failed." + (" Restart to finish." if result.get("reboot_required") else "")
-        if status == "refused" and not items:
+        good = [i for i in items if i.get("status") in ("installed", "reboot-required", "no-op")]
+        blocked = [i for i in items if i.get("status") == "refused"]
+        failed = [i for i in items if i not in good and i not in blocked]
+        parts = [f"{len(good)} installed"] + ([f"{len(blocked)} blocked"] if blocked else []) + \
+                ([f"{len(failed)} failed"] if failed else [])
+        text = ", ".join(parts) + "." + (" Restart to finish." if result.get("reboot_required") else "")
+        first = next(iter(blocked + failed), None)
+        if first:
+            text += f" {first.get('name') or first.get('id')}: {first.get('detail') or 'no reason given'}"
+        if status in ("refused", "failed") and not items:
             text = result.get("detail") or "Nothing was installed."
-        self.say(text, "error" if bad or status == "refused" else "ok")
+        bad = bool(blocked or failed or status in ("refused", "failed"))
+        if bad:
+            # Every reason, in full, in LOG (the status line holds only the first).
+            self.log.appendPlainText("\n--- Install result: " + str(status) + (f" ({result['detail']})" if result.get("detail") else ""))
+            for i in items:
+                self.log.appendPlainText(f"  {str(i.get('status', '?')).upper():<15} {i.get('name') or i.get('id')}: "
+                                         f"{i.get('detail') or 'no reason given'}")
+            self.btn_log.setChecked(True)
+        self.say(text, "error" if bad else "ok")
 
     # ------------------------------------------------------------- close
     def closeEvent(self, event):

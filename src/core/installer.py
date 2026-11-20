@@ -10,6 +10,7 @@ import dataclasses
 import ntpath
 import os
 import re
+import shutil
 import stat
 import zipfile
 from pathlib import Path
@@ -120,10 +121,61 @@ def _tail(res: common.Result) -> str:
     return " | ".join(lines[-3:])[:400]
 
 
+CAB_MAGIC = b"MSCF"
+
+
+def is_cabinet(path: Path) -> bool:
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(4) == CAB_MAGIC
+    except OSError:
+        return False
+
+
+def build_package_dir(files: list[Path], root: Path, out: Path) -> Path:
+    """Turn what the Windows Update Agent handed over into one driver package folder in `out`.
+    Cabinets are recognised by their MSCF header, not their name (the WUA cache often drops the
+    .cab extension) and expanded, each into its own sub-folder; a cabinet inside one is expanded
+    once more. Other files (an already-extracted .inf/.cat/.sys set) are copied as they are.
+    Raises InstallError naming the files when the result holds no .inf."""
+    out.mkdir(parents=True, exist_ok=False)
+    for n, f in enumerate(files):
+        if is_cabinet(f):
+            target = out / f"cab{n:02d}"
+            target.mkdir()
+            unpack_package(f, "cab", target)
+            for inner in sorted(target.rglob("*")):           # e.g. a firmware .cab inside the update .cab
+                if inner.is_file() and is_cabinet(inner) and not list(target.rglob("*.inf")):
+                    nested = target / (inner.stem + "-expanded")
+                    nested.mkdir()
+                    unpack_package(inner, "cab", nested)
+        else:
+            target = out / f.relative_to(root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(f, target)
+    if not list(out.rglob("*.inf")):
+        got = ", ".join(f"{f.name} ({f.stat().st_size} bytes{', cabinet' if is_cabinet(f) else ''})" for f in files[:8])
+        raise InstallError(f"Windows Update handed over no driver package (.inf) for this update: {got}. "
+                           "It is not an INF driver, so this tool cannot install it; use Windows Update for it")
+    return out
+
+
 def unpack_package(path: Path, fmt: str, dest: Path) -> None:
     """Unpack a driver package into `dest`: .zip with path-traversal and size checks, .cab with
-    Windows' expand.exe. The one unpacker used both before the user decides (engine) and in the
-    elevated helper. Raises InstallError."""
+    Windows' expand.exe, "dir" (a folder built by build_package_dir) copied as it is. The one
+    unpacker used both before the user decides (engine) and in the elevated helper. Raises InstallError."""
+    if fmt == "dir":
+        src = Path(path)
+        if not src.is_dir():
+            raise InstallError(f"the driver package folder {src} is missing")
+        for f in sorted(src.rglob("*")):
+            if f.is_symlink():
+                raise InstallError(f"the driver package folder contains a link: {f.name}")
+            if f.is_file():
+                target = dest / f.relative_to(src)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(f, target)
+        return
     if fmt == "zip":
         try:
             safe_extract_zip(path, dest)
@@ -136,7 +188,7 @@ def unpack_package(path: Path, fmt: str, dest: Path) -> None:
         if res.rc != 0:
             raise InstallError("could not unpack the cabinet: " + _tail(res))
     else:
-        raise InstallError(f"pnputil needs a .cab or .zip driver package, not .{fmt}")
+        raise InstallError(f"pnputil needs a .cab, .zip or unpacked driver package, not .{fmt}")
 
 
 def _prepare_pnputil(pkg: dict, path: Path, workdir: Path, blocklist=None) -> list[str]:

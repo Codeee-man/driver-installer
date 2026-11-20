@@ -9,7 +9,7 @@ import pytest
 
 import cli
 from conftest import FIXTURES, windows_powershell
-from core import common, diagnostics, engine, scanner_win, verifier
+from core import common, diagnostics, engine, scanner_win, trust, verifier
 from core.discovery import ms_catalog, windows_update
 from core.model import Device, normalise_windows_id
 
@@ -108,7 +108,7 @@ def test_offered_drivers_are_matched_to_devices_with_reasons_for_the_rest(window
                                                                 ("Realtek USB GbE Family Controller", "10.60.0.1")]
     wifi = next(p for d, p in found if p["version"] == "24.40.0.4")
     assert wifi["origin"] == "windows-update" and wifi["id"] == f"windowsupdate.{UID}" and wifi["update_id"] == UID
-    assert wifi["artifact"]["url"].endswith(".cab") and wifi["artifact"]["signature"]["subject"].startswith("O=Microsoft")
+    assert wifi["artifact"]["url"].endswith(".cab") and wifi["artifact"]["signature"]["subject"] == trust.WINDOWS_UPDATE_SUBJECTS
     assert wifi["hardware_ids"] == ["pci:8086:2725"] and wifi["matched_hardware_id"] == WIFI_ID
     events = [json.loads(line) for line in Path(common.audit_log().path).read_text().splitlines()]
     reasons = [s["reason"] for s in next(e for e in events if e["event"] == "wua.done")["data"]["skipped"]]
@@ -197,7 +197,7 @@ def test_helper_policy_keeps_the_windows_update_identity(windows, as_admin):
             "artifact": {"sha256": "a" * 64, "size": 10}}
     pkg = engine._policy_catalog_package(desc)
     assert pkg["id"] == f"windowsupdate.{UID}" and pkg["install"]["method"] == "pnputil"
-    assert pkg["artifact"]["signature"]["subject"].startswith("O=Microsoft Corporation")
+    assert pkg["artifact"]["signature"]["subject"] == trust.WINDOWS_UPDATE_SUBJECTS
 
 
 # ------------------------------------------------- catalog HWID fallback

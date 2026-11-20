@@ -18,6 +18,19 @@ each tag's GitHub Release shows its section from this file above the downloads
   pill, and no longer bob between frames.
 
 ### Fixed
+- **Windows Update drivers marked Partial were all refused by the installer** ("Blocked", no
+  reason in LOG). As administrator, the installer now takes whatever the Windows Update Agent
+  hands over (a driver cabinet without a `.cab` name, a named `.cab`, or loose
+  `.inf`/`.cat`/`.sys` files) and builds the driver folder from it, instead of refusing anything
+  not named `*.cab`. LOLDrivers, the catalog signature and `pnputil /add-driver … /install` then
+  run on that folder.
+- Microsoft's own drivers from Windows Update (e.g. Voice Clarity) are signed "Microsoft Windows",
+  not by the hardware publisher; both signers are accepted for Windows Update items (exact match,
+  valid Microsoft signature). Catalog-only drivers still need the hardware publisher.
+- **The installer's log reaches the window.** Everything the elevated run does is recorded in its
+  result and live in `results/<plan>.log` (kept even if it crashes), and replayed into LOG marked
+  `[admin]`. Every blocked row says which step refused it and why (status line, LOG, tooltip), and
+  LOG opens by itself when something was not installed.
 - Long status messages end in "…" (full text in the tooltip) and keep a fixed gap before the
   `1 / 5` counter, instead of being cut mid-word against it.
 - The window starts with focus in the device list, so `LOG` no longer looks highlighted.

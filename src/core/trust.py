@@ -39,6 +39,11 @@ GPG_KEYRING_DIRS = [
 # manifest. Their security catalog (.cat) must instead be signed by Microsoft's hardware
 # publisher, which is how every WHQL-certified or attestation-signed driver is released.
 MS_WHQL_SUBJECT = "O=Microsoft Corporation, CN=Microsoft Windows Hardware Compatibility Publisher"
+# Drivers Windows Update offers this PC: OEM drivers carry the hardware publisher's signature;
+# Microsoft's own drivers (e.g. audio effects such as Voice Clarity) are signed "Microsoft
+# Windows". Either must be an exact RDN match on a signature Windows reports as Valid.
+MS_WINDOWS_SUBJECT = "O=Microsoft Corporation, CN=Microsoft Windows"
+WINDOWS_UPDATE_SUBJECTS = [MS_WHQL_SUBJECT, MS_WINDOWS_SUBJECT]
 
 
 def key_id(pubkey_hex: str) -> str:

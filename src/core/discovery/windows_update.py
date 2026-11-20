@@ -180,16 +180,18 @@ def explain_hresult(hresult: str) -> str:
     return KNOWN_HRESULTS.get(hresult.upper().replace("0X", "0x"), "")
 
 
-def fetch_package(update_id: str, dest_dir: Path, max_size: int) -> Path:
-    """Have the Windows Update Agent download one update and copy its .cab out of the WUA
-    cache into dest_dir (empty, private). Returns the .cab. WUA checks the file against
-    Microsoft-signed update metadata; the caller still hashes it, unpacks it, runs LOLDrivers
-    and checks the catalog signature. Raises WindowsUpdateError (needs_admin tells whether an
+def fetch_payload(update_id: str, dest_dir: Path, max_size: int) -> list[Path]:
+    """Have the Windows Update Agent download one update and copy its files out of the WUA cache
+    into dest_dir (empty, private). Returns every file it copied, whatever their names: a driver
+    cabinet often has no .cab extension in the cache, and some updates arrive as several files or
+    as loose .inf/.cat/.sys files. installer.build_package_dir turns them into one driver package.
+    WUA checks every file against Microsoft-signed update metadata; the caller still checks the
+    catalog signature and LOLDrivers. Raises WindowsUpdateError (needs_admin tells whether an
     administrator could succeed where this account could not)."""
     if not _GUID.match(update_id or ""):
         raise WindowsUpdateError("malformed update id")
     dest_dir.mkdir(parents=True, exist_ok=True)
-    common.audit("wua.fetch.start", update=update_id)
+    common.audit("wua.fetch.start", update=update_id, elevated=_elevated())
     res = common.powershell(_FETCH_SCRIPT, env={"SD_UPDATE_ID": update_id, "SD_DEST": str(dest_dir)},
                             timeout=FETCH_TIMEOUT)
     if res is None:
@@ -208,18 +210,25 @@ def fetch_package(update_id: str, dest_dir: Path, max_size: int) -> Path:
             message += f": {known}"
         common.audit("wua.fetch.failed", update=update_id, stage=stage, hresult=hresult, error=str(data["error"]))
         raise WindowsUpdateError(message, hresult, stage)
-    files = data.get("files") or []
-    files = files if isinstance(files, list) else [files]
-    cabs = [Path(f["path"]) for f in files if isinstance(f, dict) and str(f.get("path", "")).lower().endswith(".cab")]
-    cabs = [c for c in cabs if c.is_file() and dest_dir.resolve() in c.resolve().parents]
-    if not cabs:
-        raise WindowsUpdateError("the Windows Update Agent copied no driver cabinet (.cab) for this update", stage="copy")
-    cab = max(cabs, key=lambda c: c.stat().st_size)
-    if cab.stat().st_size > max_size:
-        raise WindowsUpdateError(f"the update is larger than {max_size} bytes", stage="copy")
-    common.audit("wua.fetch.done", update=update_id, file=cab.name, size=cab.stat().st_size,
-                 already_downloaded=bool(data.get("downloaded")))
-    return cab
+    root = dest_dir.resolve()
+    # Trust the folder, not the list the script printed: only regular files really inside it.
+    files = sorted(f for f in root.rglob("*") if f.is_file() and not f.is_symlink() and root in f.resolve().parents)
+    if not files:
+        raise WindowsUpdateError("the Windows Update Agent copied no files for this update", stage="copy")
+    total = sum(f.stat().st_size for f in files)
+    if total > max_size:
+        raise WindowsUpdateError(f"the update is larger than {max_size} bytes ({total})", stage="copy")
+    common.audit("wua.fetch.done", update=update_id, files=[f"{f.relative_to(root)} ({f.stat().st_size})" for f in files][:20],
+                 size=total, already_downloaded=bool(data.get("downloaded")))
+    return files
+
+
+def _elevated() -> bool:
+    from .. import elevation
+    try:
+        return bool(elevation.is_admin())
+    except Exception:                       # diagnostics only
+        return False
 
 
 def _device_index(devices: list[Device]) -> dict[str, Device]:
@@ -249,7 +258,7 @@ def to_package(update: dict, device: Device, version: str) -> dict:
         "matched_hardware_id": hwid, "id_confirmed": True,
         "artifact": {"url": urls[0] if urls else "", "filename": f"{uid}.cab",
                      "size": int(update.get("MaxDownloadSize") or 0), "sha256": "", "format": "cab",
-                     "signature": {"type": "authenticode", "target": "catalog", "subject": trust.MS_WHQL_SUBJECT}},
+                     "signature": {"type": "authenticode", "target": "catalog", "subject": trust.WINDOWS_UPDATE_SUBJECTS}},
         "install": {"method": "pnputil", "reboot_required": False},
         "upstream": {"source": "windows-update",
                      "reference_url": f"https://www.catalog.update.microsoft.com/ScopedViewInline.aspx?updateid={uid}"},

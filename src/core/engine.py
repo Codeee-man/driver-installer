@@ -334,7 +334,8 @@ def _inspect_driver_package(update: Update, ctx: Context, path: Path) -> None:
             except VerificationError as exc:
                 update.set_check("publisher", FAILED, str(exc))
                 raise
-            update.set_check("publisher", PASSED, f"Authenticode: {', '.join(cats)} signed by {sig['subject']}")
+            update.set_check("publisher", PASSED, f"Authenticode: {', '.join(cats)} signed by "
+                                                  f"{verifier.describe_subjects(sig['subject'])}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)        # unpacked files never stay on disk
 
@@ -424,32 +425,44 @@ def _download_catalog_package(update: Update, ctx: Context, progress=None) -> Pa
     return path
 
 
+def wua_package(update_id: str, work: Path) -> tuple[Path, str]:
+    """Windows Update Agent download -> driver package folder (work/package). Returns the folder
+    and a SHA-256 over its files (names and contents) for the record. Raises
+    WindowsUpdateError from the agent, InstallError when the files hold no INF driver."""
+    from .discovery import windows_update
+    files = windows_update.fetch_payload(update_id, work / "payload", ms_catalog.MAX_DRIVER_BYTES)
+    folder = installer.build_package_dir(files, (work / "payload").resolve(), work / "package")
+    return folder, verifier.tree_sha256(folder)
+
+
 def _fetch_through_wua(update: Update, ctx: Context, catalog_reason: str) -> Path:
     """The public catalog has no copy (typical for OEM drivers): ask the Windows Update Agent.
+    The folder it yields is checked here (LOLDrivers, catalog signer) so the badge is final; the
+    elevated installer asks the agent again and repeats every check on its own copy.
     Raises ChannelTrust when only an administrator may download it."""
     from .discovery import windows_update
     pkg, art = update.package, update.package["artifact"]
     verifier.private_dir(ctx.quarantine)
-    work = Path(tempfile.mkdtemp(prefix=".wua-", dir=ctx.quarantine))
+    work = Path(tempfile.mkdtemp(prefix=f"wua-{pkg['update_id'][:8]}-", dir=ctx.quarantine))
     try:
-        try:
-            cab = windows_update.fetch_package(pkg["update_id"], work, ms_catalog.MAX_DRIVER_BYTES)
-        except windows_update.WindowsUpdateError as exc:
-            if exc.needs_admin:
-                raise ChannelTrust(catalog_reason, str(exc)) from None
-            update.set_check("sha256", FAILED, f"could not get the file: {catalog_reason}; {exc}")
-            raise VerificationError(f"{catalog_reason}; {exc}") from None
-        digest, size = verifier.sha256_file(cab), cab.stat().st_size
-        target = ctx.quarantine / f"{digest[:16]}-{verifier.safe_name(art['filename'])}"
-        shutil.move(str(cab), target)
-    finally:
+        folder, digest = wua_package(pkg["update_id"], work)
+    except windows_update.WindowsUpdateError as exc:
         shutil.rmtree(work, ignore_errors=True)
-    art.update(sha256=digest, size=size, acquired="windows-update-agent")
-    update.sha256, update.path = digest, str(target)
-    update.set_check("sha256", PASSED, f"{size} bytes downloaded by the Windows Update Agent, which checks every "
-                                       f"file against Microsoft-signed update metadata (the public catalog has no "
-                                       f"copy: {catalog_reason}); SHA-256 {digest[:16]}… recorded for the installer")
-    return target
+        if exc.needs_admin:
+            raise ChannelTrust(catalog_reason, str(exc)) from None
+        update.set_check("sha256", FAILED, f"could not get the file: {catalog_reason}; {exc}")
+        raise VerificationError(f"{catalog_reason}; {exc}") from None
+    except InstallError as exc:
+        shutil.rmtree(work, ignore_errors=True)
+        update.set_check("sha256", FAILED, str(exc))
+        raise VerificationError(str(exc)) from None
+    art.update(format="dir", acquire="windows-update-agent", acquired="windows-update-agent", sha256="", size=0)
+    update.sha256, update.path = "", str(folder)
+    update.set_check("sha256", PASSED, f"downloaded by the Windows Update Agent, which checks every file against "
+                                       f"Microsoft-signed update metadata (the public catalog has no copy: "
+                                       f"{catalog_reason}); files SHA-256 {digest[:16]}…; the installer fetches "
+                                       f"it again as administrator and repeats every check")
+    return folder
 
 
 def _trust_windows_update_channel(update: Update, why: ChannelTrust) -> None:
@@ -500,7 +513,16 @@ def verify_update(update: Update, ctx: Context, progress=None) -> None:
     except (VerificationError, ms_catalog.CatalogError) as exc:
         _purge(ctx, update.sha256 or art.get("sha256", ""))   # also when a later check fails after the hash passed
         _record_failure(update, exc)
-        update.status, update.detail, update.path = "failed", f"{exc} - file purged", ""
+        update.status, update.detail = "failed", f"{exc} - file purged"
+    finally:
+        if art.get("acquire") == "windows-update-agent" and update.path:
+            # The agent's folder was only for these checks: the installer fetches its own copy.
+            work = Path(update.path).parent
+            if ctx.quarantine.resolve() in work.resolve().parents:
+                shutil.rmtree(work, ignore_errors=True)
+            update.path = ""
+    if update.status == "failed":
+        update.path = ""
 
 
 def _record_failure(update: Update, exc: Exception) -> None:
@@ -596,11 +618,17 @@ def apply(updates: list[Update], ctx: Context, *, allow_without_snapshot: bool =
         result = execute_plan(plan_path)
     else:
         rc = elevation.run_elevated(helper_argv(plan_path))
+        results = common.system_state_dir() / "results"
         try:
-            result = json.loads((common.system_state_dir() / "results" / f"{plan_id}.json").read_text())
+            result = json.loads((results / f"{plan_id}.json").read_text())
         except (OSError, ValueError):
             result = {"status": "failed", "items": [],
                       "detail": f"the elevated helper exited with code {rc} and left no result"}
+        if not result.get("log"):                          # crashed before writing it: use the live log
+            result["log"] = read_helper_log(results / f"{plan_id}.log")
+        forward_helper_log(result.get("log") or [])
+        if result.get("status") != "ok" and rc not in (0, None):
+            result.setdefault("helper_rc", rc)
     if result.get("status") == "security_alert":            # purge the offending download on our side too
         for u in todo:
             if update_key(u) in (result.get("alerts") or []):
@@ -649,12 +677,13 @@ def _policy_catalog_package(desc) -> dict:
         raise VerificationError("malformed discovered package")
     origin = "windows-update" if desc.get("origin") == "windows-update" else "ms-catalog"
     prefix = "windowsupdate" if origin == "windows-update" else "mscatalog"
+    subjects = trust.WINDOWS_UPDATE_SUBJECTS if origin == "windows-update" else trust.MS_WHQL_SUBJECT
     artifact = {"filename": f"{update_id}.cab", "format": "cab",
-                "signature": {"type": "authenticode", "target": "catalog", "subject": trust.MS_WHQL_SUBJECT}}
+                "signature": {"type": "authenticode", "target": "catalog", "subject": subjects}}
     if origin == "windows-update" and art.get("acquire") == "windows-update-agent":
-        # Only an administrator could download it: the helper asks the Windows Update Agent
-        # itself (Microsoft-signed metadata), then hashes and checks the .cab like any other.
-        artifact["acquire"] = "windows-update-agent"
+        # The helper asks the Windows Update Agent itself (Microsoft-signed metadata) for the
+        # files, builds the driver folder from whatever it hands over, then runs every check.
+        artifact.update(acquire="windows-update-agent", format="dir")
     else:
         sha256, size = str(art.get("sha256", "")), art.get("size")
         if not manifest.SHA256_RE.match(sha256) or not isinstance(size, int) or not 0 < size <= ms_catalog.MAX_DRIVER_BYTES:
@@ -666,17 +695,19 @@ def _policy_catalog_package(desc) -> dict:
 
 
 def _acquire_through_wua(pkg: dict, staging: Path) -> Path:
-    """Helper side of a Windows Update channel item: download as administrator, record the hash."""
+    """Helper side of a Windows Update item: as administrator, have the agent hand over the
+    update and build the driver folder that installer.prepare then checks (LOLDrivers, catalog
+    signer) and installs."""
     from .discovery import windows_update
-    work = staging / ("wua-" + pkg["update_id"])
     try:
-        cab = windows_update.fetch_package(pkg["update_id"], work, ms_catalog.MAX_DRIVER_BYTES)
+        folder, digest = wua_package(pkg["update_id"], staging / ("wua-" + pkg["update_id"]))
     except windows_update.WindowsUpdateError as exc:
-        raise VerificationError(str(exc)) from None
-    art = pkg["artifact"]
-    art.update(sha256=verifier.sha256_file(cab), size=cab.stat().st_size)
-    common.audit("helper.wua_acquired", update=pkg["update_id"], sha256=art["sha256"], size=art["size"])
-    return cab
+        raise VerificationError(f"Windows Update download as administrator failed: {exc}") from None
+    pkg["artifact"]["sha256"] = digest
+    common.audit("helper.wua_acquired", update=pkg["update_id"], name=pkg["name"], files_sha256=digest,
+                 files=sum(1 for f in folder.rglob("*") if f.is_file()),
+                 infs=[f.name for f in folder.rglob("*.inf")][:10])
+    return folder
 
 
 def _policy_repo_package(desc) -> dict:
@@ -727,10 +758,49 @@ def _ident(item) -> str:
     return str(item.get("package_id") or ("fwupd:" + str(item.get("fwupd_device"))))
 
 
-def _refuse(result: dict, ident: str, reason: str) -> None:
-    common.audit("helper.refused", item=ident, reason=reason)
-    result["items"].append({"id": ident, "name": ident, "status": "refused", "rc": -1, "detail": reason,
+def _reason(exc: BaseException) -> str:
+    """Never an empty reason: KeyError('x') and friends say what they are."""
+    text = str(exc).strip()
+    return text if text and text not in ("''", '""') else f"{type(exc).__name__}: {exc!r}"
+
+
+def _refuse(result: dict, ident: str, reason: str, name: str = "", step: str = "") -> None:
+    reason = reason.strip() or "refused without a reason (bug): see the log"
+    if step:
+        reason = f"{step}: {reason}"
+    common.audit("helper.refused", item=ident, name=name or ident, reason=reason)
+    result["items"].append({"id": ident, "name": name or ident, "status": "refused", "rc": -1, "detail": reason,
                             "commands": []})
+
+
+# ------------------------------------------------------- helper log to the GUI
+HELPER_LOG_MAX = 400
+
+
+def read_helper_log(path: Path) -> list[dict]:
+    """The helper's live log (JSON lines), or [] if it never started writing one."""
+    out = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and isinstance(rec.get("event"), str):
+                    out.append(rec)
+    except OSError:
+        return []
+    return out[-HELPER_LOG_MAX:]
+
+
+def forward_helper_log(records: list[dict]) -> None:
+    """Replay the elevated helper's events into this process's audit log as "elevated.<event>",
+    so the LOG drawer and --debug show what happened as administrator, in order."""
+    for rec in records[-HELPER_LOG_MAX:]:
+        data = rec.get("data") if isinstance(rec.get("data"), dict) else {}
+        common.audit("elevated." + str(rec["event"])[:60], helper_ts=str(rec.get("ts", ""))[:32],
+                     **{str(k)[:40]: v for k, v in list(data.items())[:20]})
 
 
 def _run_plan(plan: dict, result: dict, trusted_keys) -> None:
@@ -751,7 +821,7 @@ def _run_plan(plan: dict, result: dict, trusted_keys) -> None:
             kind, name, pkg = _resolve(item, man)
             resolved.append((kind, ident, name, pkg, item))
         except (VerificationError, InstallError, OSError, KeyError, TypeError, AttributeError) as exc:
-            _refuse(result, ident, str(exc))
+            _refuse(result, ident, _reason(exc), step="plan check")
 
     # 2. Live BYOVD blocklist, fetched now, only if a Windows driver package is involved.
     blocklist = None
@@ -791,13 +861,14 @@ def _run_plan(plan: dict, result: dict, trusted_keys) -> None:
             except loldrivers.SecurityAlert as alert:
                 # A known vulnerable or malicious driver: abort the whole plan, install nothing.
                 result["items"] = [i for i in result["items"] if i["status"] == "refused"]
-                _refuse(result, ident, str(alert))
+                _refuse(result, ident, str(alert), name, step="LOLDrivers BYOVD check")
                 result.update(status="security_alert", detail=str(alert), alerts=[ident], matches=alert.matches)
                 return
             except (VerificationError, InstallError, OSError, KeyError, TypeError) as exc:
-                _refuse(result, ident, str(exc))
+                _refuse(result, ident, _reason(exc), name, step="verification before installing")
         if not prepared:
-            result.update(status="refused", detail="no item passed verification; nothing was installed")
+            reasons = "; ".join(f"{i['name']}: {i['detail']}" for i in result["items"][:3])
+            result.update(status="refused", detail=f"no item passed verification, nothing was installed ({reasons})")
             return
 
         # 4. Restore point.
@@ -829,23 +900,51 @@ def execute_plan(plan_path: Path, *, trusted_keys: dict | None = None) -> dict:
     if not elevation.is_admin():
         raise ElevationError("the install helper must run with administrator rights")
     result = {"plan_id": "", "status": "failed", "detail": "", "snapshot": None, "items": []}
+    records: list[dict] = []
+    live = {"fh": None}
+
+    def keep(rec: dict) -> None:
+        # Every event of this run, for the front end's LOG drawer: in the result, and line by
+        # line in results/<plan>.log so even a crash leaves a trail. Readable, never secret.
+        small = {"ts": rec["ts"], "event": rec["event"], "data": rec["data"]}
+        records.append(small)
+        if live["fh"]:
+            try:
+                live["fh"].write(json.dumps(small, default=str)[:4000] + "\n")
+                live["fh"].flush()
+            except (OSError, ValueError):
+                pass
+
+    common.audit_log().listeners.append(keep)
+    out = common.system_state_dir() / "results"
     try:
         plan = json.loads(_read_capped(plan_path, 1 << 20))
         plan_id = str(plan.get("plan_id", "")) if isinstance(plan, dict) else ""
         if not re.fullmatch(r"[0-9a-f]{32}", plan_id):
             raise VerificationError("plan id is malformed")
         result["plan_id"] = plan_id
+        out.mkdir(parents=True, exist_ok=True)
+        live["fh"] = open(out / f"{plan_id}.log", "w", encoding="utf-8")
+        if os.name != "nt":
+            os.chmod(out, 0o755)
+            os.chmod(out / f"{plan_id}.log", 0o644)
         common.audit("helper.start", plan=plan_id, items=len(plan.get("items") or []))
         _run_plan(plan, result, trusted_keys)
     except (VerificationError, InstallError, OSError, ValueError, KeyError) as exc:
-        result.update(status="refused", detail=str(exc))
-    common.audit("helper.done", plan=result["plan_id"], status=result["status"], detail=result["detail"])
+        result.update(status="refused", detail=_reason(exc))
+    except Exception as exc:                   # a bug must still leave a result with its reason
+        result.update(status="failed", detail=f"the helper stopped with an internal error: {_reason(exc)}")
+        common.audit("helper.crashed", error=_reason(exc))
+    finally:
+        common.audit("helper.done", plan=result["plan_id"], status=result["status"], detail=result["detail"],
+                     items=[f"{i['name']}: {i['status']}: {i['detail']}"[:300] for i in result["items"]][:20])
+        common.audit_log().listeners.remove(keep)
+        if live["fh"]:
+            live["fh"].close()
+    result["log"] = [{**r, "data": json.loads(json.dumps(r["data"], default=str))} for r in records[-HELPER_LOG_MAX:]]
     if result["plan_id"]:
-        out = common.system_state_dir() / "results"
-        out.mkdir(parents=True, exist_ok=True)
         target = out / f"{result['plan_id']}.json"
         target.write_text(json.dumps(result, indent=1))
         if os.name != "nt":
-            os.chmod(out, 0o755)
             os.chmod(target, 0o644)
     return result

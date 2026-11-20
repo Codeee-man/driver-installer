@@ -93,6 +93,14 @@ def _receive(read, out, expected_sha256: str, expected_size: int, progress=None)
     return actual
 
 
+def tree_sha256(folder: Path) -> str:
+    """One SHA-256 over every file below `folder` (relative name and content), for the record."""
+    h = hashlib.sha256()
+    for f in sorted(p for p in Path(folder).rglob("*") if p.is_file()):
+        h.update(f.relative_to(folder).as_posix().encode() + b"\0" + bytes.fromhex(sha256_file(f)))
+    return h.hexdigest()
+
+
 def private_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     if os.name != "nt":
@@ -334,20 +342,30 @@ def subject_matches(expected: str, actual: str) -> bool:
     return bool(want) and want <= parse_dn(actual)
 
 
-def verify_authenticode(path: Path, subject: str, thumbprint: str | None = None) -> AuthenticodeInfo:
+def _quoted(subject) -> str:
+    return f"'{subject}'" if isinstance(subject, str) else describe_subjects(subject)
+
+
+def describe_subjects(subject) -> str:
+    return subject if isinstance(subject, str) else " or ".join(f"'{s}'" for s in subject)
+
+
+def verify_authenticode(path: Path, subject, thumbprint: str | None = None) -> AuthenticodeInfo:
+    """`subject`: one pinned publisher, or a list of alternatives (any one must match exactly)."""
     info = authenticode_info(path)
-    ok = info.valid and subject_matches(subject, info.subject) and (
+    allowed = [subject] if isinstance(subject, str) else list(subject)
+    ok = info.valid and any(subject_matches(s, info.subject) for s in allowed) and (
         not thumbprint or hmac.compare_digest(info.thumbprint, thumbprint.upper()))
     common.audit("signature.authenticode", file=str(path), ok=ok, status=info.status, subject=info.subject,
                  thumbprint=info.thumbprint, type=info.signature_type)
     if not ok:
         why = (f"status {info.status} {info.message}".strip() if not info.valid
-               else f"signer '{info.subject}' is not the pinned publisher '{subject}'")
+               else f"signer '{info.subject}' is not the pinned publisher {_quoted(subject)}")
         raise VerificationError(f"Authenticode check failed for {Path(path).name}: {why}")
     return info
 
 
-def verify_catalogs(directory: Path, subject: str, thumbprint: str | None = None) -> list[str]:
+def verify_catalogs(directory: Path, subject, thumbprint: str | None = None) -> list[str]:
     """Verify every .cat in an extracted driver package against the pinned publisher.
     Windows itself checks that the catalog covers the .inf/.sys files when pnputil stages them."""
     cats = sorted(Path(directory).rglob("*.cat"))

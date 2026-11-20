@@ -63,7 +63,7 @@ def test_stage_verified_copy_detects_a_swapped_file(tmp_path):
     src.write_bytes(PAYLOAD)
     staged = verifier.stage_verified_copy(src, tmp_path / "stage", SHA, len(PAYLOAD), "pkg.zip")
     assert staged.read_bytes() == PAYLOAD
-    src.write_bytes(PAYLOAD[:-1] + b"!")                # attacker swaps the file after the user-side check
+    src.write_bytes(PAYLOAD[:-1] + bytes([PAYLOAD[-1] ^ 0xFF]))   # attacker swaps the file (always a different byte)
     with pytest.raises(VerificationError, match="SHA-256 MISMATCH"):
         verifier.stage_verified_copy(src, tmp_path / "stage2", SHA, len(PAYLOAD), "pkg.zip")
     assert list((tmp_path / "stage2").iterdir()) == []
