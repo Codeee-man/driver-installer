@@ -6,6 +6,8 @@ each tag's GitHub Release shows its section from this file above the downloads
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-11-20
+
 ### Fixed
 - **Windows Setup elevation.** `DriverInstaller-Setup.exe` now asks for administrator rights only
   through the native UAC prompt and never offers a per-user install
@@ -21,6 +23,7 @@ each tag's GitHub Release shows its section from this file above the downloads
 
 ### Added
 - `CHANGELOG.md`; release builds put the matching section into the GitHub Release notes.
+- `tools/changelog.py` prints UTF-8 on Windows consoles (it failed on code pages such as cp1250).
 
 ## [1.1.2] - 2026-11-19
 
@@ -97,7 +100,8 @@ First release.
   systemd timer for weekly checks.
 - Release builds: Windows zip, `.deb` and AppImage, with SHA-256 sums and download links.
 
-[Unreleased]: https://github.com/Codeee-man/driver-installer/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/Codeee-man/driver-installer/compare/v1.1.3...HEAD
+[1.1.3]: https://github.com/Codeee-man/driver-installer/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/Codeee-man/driver-installer/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Codeee-man/driver-installer/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Codeee-man/driver-installer/compare/v1.0.0...v1.1.0

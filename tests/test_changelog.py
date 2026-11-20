@@ -20,16 +20,19 @@ def test_every_release_has_its_own_notes(tag):
     assert "https://github.com/" not in notes.splitlines()[-1]            # link references are not included
 
 
-def test_tags_in_the_repository_all_have_sections():
+def test_every_tag_in_the_repository_gets_release_notes():
+    """What the release job needs: each tag has its own section or, for a tag pushed before
+    Unreleased was renamed, non-empty Unreleased notes. A missing section must not fail the
+    build of the tag being released."""
     tags = subprocess.run(["git", "-C", str(ROOT), "tag", "-l", "v*"], capture_output=True, text=True).stdout.split()
-    found = changelog.sections(TEXT)
     for tag in tags:
-        assert tag.lstrip("v") in found, f"{tag} is missing from CHANGELOG.md"
+        notes, _exact = changelog.notes_for(tag, TEXT)
+        assert notes.strip(), tag
 
 
 def test_unreleased_stands_in_and_empty_notes_fail(capsys):
-    notes, exact = changelog.notes_for("v9.9.9", TEXT)
-    assert not exact and notes == changelog.sections(TEXT)["Unreleased"]
+    pending = "## [Unreleased]\n\n### Fixed\n- not tagged yet\n\n## [1.0.0] - x\n\nold\n"
+    assert changelog.notes_for("v9.9.9", pending) == ("### Fixed\n- not tagged yet", False)
     with pytest.raises(LookupError):
         changelog.notes_for("2.0.0", "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - x\n\nnotes\n")
     sample = "## [Unreleased]\n\n## [2.0.0] - 2027-01-01\n\n### Added\n- thing\n\n[2.0.0]: https://x\n"

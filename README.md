@@ -23,7 +23,7 @@ driver tool. `--debug` (or LOG in the window) shows every step: devices scanned,
 results, and why each result was skipped. Every Windows driver package is checked against the
 LOLDrivers list of known vulnerable drivers before install.
 
-Releases: push a tag `vMAJOR.MINOR.PATCH` (the current line is `v1.1.x`; the next is `v1.1.3`; describe it under Unreleased in `CHANGELOG.md` first) and
+Releases: push a tag `vMAJOR.MINOR.PATCH` (the current line is `v1.1.x`; the next is `v1.1.4`; describe it under Unreleased in `CHANGELOG.md` first) and
 `.github/workflows/build.yml` tests on Windows and Linux, installs the Windows build as a standard
 user, then attaches `DriverInstaller-Setup.exe`, `DriverInstaller-Windows-Portable.zip`, a `.deb` and an
 `.AppImage` (plus `SHA256SUMS`) to a published release. Build locally with
