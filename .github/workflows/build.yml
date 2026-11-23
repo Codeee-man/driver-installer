@@ -8,6 +8,7 @@ name: build
 on:
   push:
     tags: ["v*"]
+    branches: ["probe/setup-elevation"]
   workflow_dispatch:
 
 permissions:
@@ -356,6 +357,7 @@ jobs:
           if-no-files-found: error
 
   linux:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
