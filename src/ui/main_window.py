@@ -15,13 +15,13 @@ import functools
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QModelIndex, Qt
-from PySide6.QtGui import QPainterPath, QRegion
+from PySide6.QtCore import QEvent, QModelIndex, Qt, QThread, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFrame, QGridLayout, QHBoxLayout,
                                QHeaderView, QLabel, QMainWindow, QPlainTextEdit, QProgressBar, QPushButton,
                                QSizePolicy, QTableView, QVBoxLayout, QWidget)
 
-from core import common, engine
+from core import common, engine, updates
 from core.common import ElevationError
 from . import dialogs, settings, theme
 from .delegates import BadgeDelegate, CheckDelegate, NameDelegate, Spinner
@@ -89,6 +89,19 @@ class DriverView(QTableView):
         super().keyPressEvent(event)
 
 
+class UpdateCheck(QThread):
+    """core.updates.update_available() off the GUI thread; `result` carries True or False.
+    It never raises, and the 3 s timeout bounds how long closing the window can wait for it."""
+    result = Signal(bool)
+
+    def run(self) -> None:
+        try:
+            newer = updates.update_available()
+        except Exception:                          # belt and braces: the check must never surface
+            newer = False
+        self.result.emit(bool(newer))
+
+
 class MainWindow(QMainWindow):
     def __init__(self, ctx: engine.Context, workdir: Path):
         super().__init__()
@@ -96,6 +109,8 @@ class MainWindow(QMainWindow):
         self.worker: Worker | None = None
         self._jobs = 0                            # background jobs started and not yet handled
         self.popover: ChecksPopover | None = None
+        self.update_check: UpdateCheck | None = None
+        self.settings_dialog = None
         self.overrides = (False, False)          # (no restore point, no LOLDrivers list) agreed by the user
         self.ask = functools.partial(dialogs.ask, self)
         self.setWindowTitle(TITLE)
@@ -108,20 +123,26 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 14, 20, 16)
         layout.setSpacing(12)
 
-        # header: [log]   Driver Installer   [theme] [rescan]
+        # header: [log]   Driver Installer   [update available] [settings] [rescan]
         header = QGridLayout()
         header.setColumnStretch(0, 1)
         header.setColumnStretch(2, 1)
         self.btn_log = QPushButton("LOG", objectName="headerButton", checkable=True, toolTip="Show the activity log")
         self.title = QLabel(TITLE, objectName="title", alignment=Qt.AlignCenter)
-        self.btn_theme = QPushButton(objectName="headerButton")
+        self.btn_update = QPushButton(objectName="updateButton", toolTip="A newer release of Driver Installer is "
+                                      "available. Click to open the download page.")
+        self.btn_update.setAccessibleName("Update available")
+        self.btn_update.hide()                                 # shown only when the startup check finds one
+        self.btn_settings = QPushButton(objectName="headerButton", toolTip="Accent colour, font and update check")
+        self.btn_settings.setAccessibleName("Settings")
         self.btn_rescan = QPushButton("RESCAN", objectName="headerButton", toolTip="Scan hardware and check for updates again")
-        for b in (self.btn_log, self.btn_theme, self.btn_rescan):
+        for b in (self.btn_log, self.btn_update, self.btn_settings, self.btn_rescan):
             b.setCursor(Qt.PointingHandCursor)
             b.setFocusPolicy(Qt.TabFocus)          # a click does not leave a focus ring; Tab still reaches it
         right = QHBoxLayout()
         right.setSpacing(8)
-        right.addWidget(self.btn_theme)
+        right.addWidget(self.btn_update)
+        right.addWidget(self.btn_settings)
         right.addWidget(self.btn_rescan)
         header.addWidget(self.btn_log, 0, 0, Qt.AlignLeft | Qt.AlignVCenter)
         header.addWidget(self.title, 0, 1)
@@ -156,7 +177,6 @@ class MainWindow(QMainWindow):
         self.view.setItemDelegateForColumn(COL_VERIFY, self.badges)
         self.view.setItemDelegateForColumn(COL_SELECT, CheckDelegate(self.view))
         self.view.setAccessibleName("Devices and driver updates")
-        self.view.viewport().installEventFilter(self)          # keeps the rounded clip in step with its size
         layout.addWidget(self.view, 1)
 
         self.log = QPlainTextEdit(objectName="log", readOnly=True, maximumBlockCount=800)
@@ -192,7 +212,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(bar)
 
         self.btn_log.toggled.connect(self.log.setVisible)
-        self.btn_theme.clicked.connect(self.toggle_theme)
+        self.btn_settings.clicked.connect(self.open_settings)
+        self.btn_update.clicked.connect(self.open_release_page)
         self.btn_rescan.clicked.connect(self.start_scan)
         self.select_full.clicked.connect(self.toggle_full)
         self.btn_install.clicked.connect(lambda: self.do_install())
@@ -203,42 +224,66 @@ class MainWindow(QMainWindow):
         self._listener = self._log_record
         common.audit_log().listeners.append(self._listener)
         self.say("Ready.")
-        self.apply_theme(theme.current().name, save=False)
+        self.apply_look()
         self.update_controls()
 
-    # ------------------------------------------------------------- theme
-    def apply_theme(self, name: str, save: bool = True) -> None:
-        """Switch theme in place: stylesheet, header font, row height, labels, painted cells."""
-        t = theme.set_current(name)
+    # -------------------------------------------------------------- look
+    def apply_look(self, accent: str | None = None, font: str | None = None) -> None:
+        """Restyle in place with this accent and/or font: stylesheet (every widget and dialog),
+        header font, row height, labels, and the painted cells (badges, spinner, checkboxes)."""
+        t = theme.configure(accent=accent, font=font)
         app = QApplication.instance()
         if app is not None:
             app.setStyleSheet(theme.stylesheet())
-        self.view.horizontalHeader().setFont(theme.font(8, bold=True, spacing=1.2 if t.uppercase else None))
+        self.view.horizontalHeader().setFont(theme.font(8, bold=True, spacing=1.2))
         self.view.verticalHeader().setDefaultSectionSize(t.row_height)
-        self.btn_log.setText(t.header_labels["log"])
-        self.btn_rescan.setText(t.header_labels["rescan"])
-        self.btn_theme.setText(t.label)
-        other = theme.CLEAN if t.name == theme.MATRIX else theme.MATRIX
-        self.btn_theme.setToolTip(f"Theme: {t.name.capitalize()}. Click for {other.capitalize()}.")
-        self.btn_theme.setAccessibleName(f"Theme: {t.name}")
+        labels = t.header_labels
+        self.btn_log.setText(labels["log"])
+        self.btn_rescan.setText(labels["rescan"])
+        self.btn_settings.setText(labels["settings"])
+        self.btn_update.setText(labels["update"])
         if self.popover is not None:
             try:
                 self.popover.close()
             except RuntimeError:
                 pass
             self.popover = None
-        self.say(*getattr(self, "_said", ("Ready.", "")))     # re-render with this theme's prompt style
         for widget in (self.status, self.title):
             widget.style().unpolish(widget)
             widget.style().polish(widget)
-        self.round_table()
         self.view.viewport().update()
         self.view.horizontalHeader().viewport().update()
-        if save:
-            settings.save(theme=t.name)
 
-    def toggle_theme(self) -> None:
-        self.apply_theme(theme.CLEAN if theme.current().name == theme.MATRIX else theme.MATRIX)
+    def open_settings(self) -> None:
+        """[ SETTINGS ]: every change applies at once and is saved to ui.json."""
+        from .settings_dialog import SettingsDialog
+        dialog = SettingsDialog(self, settings.load())
+        dialog.changed.connect(self.settings_changed)
+        self.settings_dialog = dialog
+        dialog.open()                                  # window-modal, without a nested event loop
+
+    def settings_changed(self, change: dict) -> None:
+        settings.save(**change)
+        if "accent" in change or "font" in change:
+            self.apply_look(accent=change.get("accent"), font=change.get("font"))
+        common.audit("ui.settings.changed", **change)
+
+    # ----------------------------------------------------- update check
+    def start_update_check(self) -> UpdateCheck | None:
+        """Ask GitHub in the background whether a newer release exists, if the user wants that.
+        Never blocks and never pops up: a newer release only shows the header button."""
+        if not settings.load().get("check_updates", True) or self.update_check is not None:
+            return None
+        self.update_check = UpdateCheck(self)
+        self.update_check.result.connect(self.on_update_result)
+        self.update_check.start()
+        return self.update_check
+
+    def on_update_result(self, newer: bool) -> None:
+        self.btn_update.setVisible(bool(newer))
+
+    def open_release_page(self) -> None:
+        QDesktopServices.openUrl(QUrl(updates.RELEASES_PAGE))
 
     # ------------------------------------------------------------ helpers
     def _log_record(self, rec: dict) -> None:
@@ -250,7 +295,7 @@ class MainWindow(QMainWindow):
 
     def say(self, text: str, kind: str = "") -> None:
         self._said = (text, kind)
-        self.status.setText(("> " if theme.current().name == theme.MATRIX else "") + text)
+        self.status.setText("> " + text)
         self.status.setProperty("kind", kind)
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
@@ -281,30 +326,6 @@ class MainWindow(QMainWindow):
             if not self.busy:
                 self.progress_idle()
             self.update_controls()
-
-    # ------------------------------------------------------------ geometry
-    def eventFilter(self, obj, event) -> bool:
-        if obj is self.view.viewport() and event.type() == QEvent.Resize:
-            self.round_table()
-        return super().eventFilter(obj, event)
-
-    def round_table(self) -> None:
-        """Clip the rows to the table's rounded bottom corners (Clean: 12 px), so a hovered or
-        selected last row does not paint square corners over the border."""
-        port, radius = self.view.viewport(), theme.current().panel_radius - 1
-        if radius <= 2:
-            port.clearMask()
-            return
-        r = port.rect()
-        path = QPainterPath()
-        path.moveTo(r.left(), r.top())
-        path.lineTo(r.right() + 1, r.top())
-        path.lineTo(r.right() + 1, r.bottom() + 1 - radius)
-        path.quadTo(r.right() + 1, r.bottom() + 1, r.right() + 1 - radius, r.bottom() + 1)
-        path.lineTo(r.left() + radius, r.bottom() + 1)
-        path.quadTo(r.left(), r.bottom() + 1, r.left(), r.bottom() + 1 - radius)
-        path.closeSubpath()
-        port.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
     # ---------------------------------------------------------- progress
     def progress_pulse(self) -> None:
@@ -552,15 +573,18 @@ class MainWindow(QMainWindow):
             pass
         if self.worker and self.worker.isRunning():
             self.worker.wait(10000)               # leave no thread behind
+        if self.update_check is not None and self.update_check.isRunning():
+            self.update_check.wait(int(updates.TIMEOUT * 1000) + 2000)
         event.accept()
 
 
-def create(ctx: engine.Context, workdir: Path, autoscan: bool = False, theme_name: str | None = None):
+def create(ctx: engine.Context, workdir: Path, autoscan: bool = False):
     app = QApplication.instance() or QApplication(["driver-installer"])
     app.setApplicationName(TITLE)
     app.setStyle("Fusion")
     theme.register_fonts()
-    theme.set_current(settings.startup_theme(theme_name))
+    prefs = settings.load()
+    theme.configure(accent=prefs["accent"], font=prefs["font"])
     win = MainWindow(ctx, workdir)
     if autoscan:
         win.start_scan()
@@ -577,8 +601,8 @@ def settle(app, win, timeout: float = 60.0) -> None:
     raise TimeoutError("background work did not finish")
 
 
-def run(ctx: engine.Context, workdir: Path, shot: str | None = None, theme_name: str | None = None) -> int:
-    app, win = create(ctx, workdir, theme_name=theme_name)
+def run(ctx: engine.Context, workdir: Path, shot: str | None = None) -> int:
+    app, win = create(ctx, workdir)
     win.show()
     win.start_scan()                              # scan as soon as the window opens
     if shot:                                      # scripted walkthrough for headless screenshots; never installs
@@ -588,4 +612,5 @@ def run(ctx: engine.Context, workdir: Path, shot: str | None = None, theme_name:
         win.grab().save(shot)
         win.close()
         return 0
+    win.start_update_check()                      # in the background; off in Settings, never in screenshots
     return app.exec()

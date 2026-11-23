@@ -1,11 +1,13 @@
-"""Remembered UI preferences (currently just the theme). Pure Python, no Qt.
+"""Remembered UI preferences: accent colour, font, and the startup update check. No Qt.
 
 Per user:   ~/.config/driver-installer/ui.json   (%APPDATA%\\driver-installer\\ui.json on Windows)
-System:     /etc/driver-installer/ui.json        (read-only default an administrator may set)
+System:     /etc/driver-installer/ui.json        (read-only defaults an administrator may set)
 
-Precedence when the window opens: --theme on the command line, then the user file, then the
-system file, then the built-in default. --theme is for that launch only; the in-app toggle
-is what saves a choice.
+    {"accent": "green", "font": "vt323", "check_updates": true}
+
+The user's file wins over the system file, which wins over the built-in defaults. Unknown keys
+and invalid values are ignored (an old "theme" entry from versions with a Clean theme too).
+The Settings dialog saves every change at once.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ from core import common
 from . import theme as _theme
 
 SYSTEM_FILE = Path("/etc/driver-installer/ui.json")
+DEFAULTS = {"accent": _theme.DEFAULT_ACCENT, "font": _theme.DEFAULT_FONT, "check_updates": True}
 
 
 def user_file() -> Path:
@@ -36,18 +39,33 @@ def _read(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _valid(key: str, value) -> bool:
+    if key == "accent":
+        return value in _theme.ACCENTS
+    if key == "font":
+        return value in _theme.FONTS
+    if key == "check_updates":
+        return isinstance(value, bool)
+    return False
+
+
 def load() -> dict:
-    """System defaults overlaid with the user's own file. Unknown or invalid values are dropped."""
-    merged = {**_read(SYSTEM_FILE), **_read(user_file())}
-    if merged.get("theme") not in _theme.NAMES:
-        merged.pop("theme", None)
+    """The effective preferences: built-in defaults, overlaid with the system file, then the
+    user's own file. Always has every key of DEFAULTS, each with a valid value."""
+    merged = dict(DEFAULTS)
+    for source in (_read(SYSTEM_FILE), _read(user_file())):
+        merged.update({k: v for k, v in source.items() if _valid(k, v)})
     return merged
 
 
 def save(**values) -> bool:
-    """Merge values into the user file, atomically. Returns False (and changes nothing) on error."""
+    """Merge valid values into the user file, atomically. Returns False (and changes nothing)
+    on error or when a value is invalid."""
+    if not all(_valid(k, v) for k, v in values.items()):
+        return False
     path = user_file()
-    data = {**_read(path), **values}
+    data = {k: v for k, v in _read(path).items() if _valid(k, v)}
+    data.update(values)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".ui-", suffix=".json")
@@ -58,9 +76,3 @@ def save(**values) -> bool:
         common.audit("ui.settings.save_failed", path=str(path), error=str(exc))
         return False
     return True
-
-
-def startup_theme(cli_choice: str | None = None) -> str:
-    if cli_choice in _theme.NAMES:
-        return cli_choice
-    return load().get("theme", _theme.DEFAULT)

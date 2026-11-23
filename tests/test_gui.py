@@ -419,41 +419,142 @@ def QApplication_instance():
     return QApplication.instance()
 
 
-def test_theme_toggle_switches_in_place_and_is_remembered(window):
-    app, win, ups = window
-    assert win.btn_theme.text() == "[ MATRIX ]" and win.btn_log.text() == "LOG"
-    assert "#00ff66" in badge_colours(win, ups["full"])
-    QTest.mouseClick(win.btn_theme, Qt.LeftButton)
+def open_settings(app, win):
+    win.open_settings()
     app.processEvents()
-    t = theme.current()
-    assert t.name == "clean" and win.btn_theme.text() == "[ CLEAN ]" and win.btn_rescan.text() == "Rescan"
-    assert t.badges["full"][0].lower() in badge_colours(win, ups["full"])     # delegates repainted, no restart
-    assert "#00ff66" not in badge_colours(win, ups["full"])
-    assert theme.family() != "VT323" and "VT323" not in QApplication_instance().styleSheet()
-    assert win.view.verticalHeader().defaultSectionSize() == t.row_height
-    assert not win.status.text().startswith(">")                              # no terminal prompt in Clean
-    assert settings.load() == {"theme": "clean"} and settings.user_file().is_file()
-    QTest.mouseClick(win.btn_theme, Qt.LeftButton)
-    assert theme.current().name == "matrix" and win.status.text().startswith("> ")
-    assert settings.load() == {"theme": "matrix"}
+    dlg = win.settings_dialog
+    assert dlg is not None and dlg.isVisible()
+    return dlg
 
 
-def test_remembered_theme_and_cli_override(tmp_path, windows, runner):
-    settings.save(theme="clean")
+def test_settings_button_replaces_the_theme_toggle(window):
+    app, win, _ = window
+    assert not hasattr(win, "btn_theme")
+    assert win.btn_settings.text() == "[ SETTINGS ]" and win.btn_settings.objectName() == "headerButton"
+    assert (win.btn_log.text(), win.btn_rescan.text()) == ("LOG", "RESCAN")
+    assert win.status.text().startswith("> ")                              # terminal prompt, always
+    QTest.mouseClick(win.btn_settings, Qt.LeftButton)
+    app.processEvents()
+    dlg = win.settings_dialog
+    try:
+        assert dlg.isVisible() and dlg.objectName() == "settings"
+        assert [b.text() for b in dlg.accents.buttons()] == ["MATRIX GREEN", "VIVID ORANGE", "CYAN", "AMBER", "SILVER"]
+        assert [b.text() for b in dlg.fonts.buttons()] == ["VT323", "MONO", "SANS"]
+        assert dlg.button("green").isChecked() and dlg.button("vt323").isChecked()
+        assert dlg.check_updates.isChecked() and dlg.check_updates.text() == "Check for updates on startup"
+        assert dlg.accents.exclusive() and dlg.fonts.exclusive()
+    finally:
+        dlg.close()
+
+
+@pytest.mark.parametrize("accent", ["orange", "cyan", "amber", "silver", "green"])
+def test_accent_preset_restyles_everything_at_once_and_is_saved(window, accent):
+    app, win, ups = window
+    dlg = open_settings(app, win)
+    try:
+        hex_value = theme.ACCENTS[accent][1]
+        if accent == "green":                                     # from another accent back to the default
+            QTest.mouseClick(dlg.button("silver"), Qt.LeftButton)
+        QTest.mouseClick(dlg.button(accent), Qt.LeftButton)
+        app.processEvents()
+        assert dlg.button(accent).isChecked() and theme.current().accent == accent
+        assert theme.ACCENT == hex_value
+        sheet = QApplication_instance().styleSheet()
+        assert sheet == theme.stylesheet()                                   # re-applied to the whole app
+        for selector in ("QLabel#title", "QPushButton#primary", "QProgressBar#progress::chunk",
+                         "QPushButton#headerButton:hover", "QCheckBox::indicator:checked", "QPushButton#updateButton"):
+            assert hex_value in _rule(sheet, selector, last=selector.endswith("updateButton")), selector
+        # painted cells follow on their next repaint: the "To update" pill uses the accent ...
+        status = win.model.index(row_of(win, ups["full"]), COL_STATUS)
+        assert status.data(BadgeRole) == ("To update", "accent") and theme.BADGES["accent"][0] == hex_value
+        win.view.viewport().repaint()
+        image = win.view.viewport().grab().toImage()
+        r = win.view.visualRect(status)
+        assert hex_value.lower() in {image.pixelColor(x, y).name() for x in range(r.left(), r.right())
+                                     for y in range(r.top(), r.bottom())}
+        # ... while verification keeps its meaning: Full is green whatever the accent
+        assert theme.BADGES["full"][0] == "#00FF66" and theme.BADGES["partial"][0] == theme.AMBER
+        # the LOG drawer and the dialog itself are tinted too
+        assert theme.MUTED_DIM in _rule(sheet, "QPlainTextEdit#log") and theme.BORDER in _rule(sheet, "QPlainTextEdit#log")
+        assert theme.ACCENT in _rule(sheet, "QDialog#settings QLabel#settingsTitle")
+        assert settings.load()["accent"] == accent and settings.user_file().is_file()
+    finally:
+        dlg.close()
+
+
+def test_accent_palettes_tint_the_terminal_greys():
+    green = theme.palette("green")
+    assert (green["TEXT"], green["BORDER"], green["MUTED"], green["SURFACE_SELECTED"]) == \
+        ("#00FF41", "#1A3320", "#00A843", "#0F2617")                        # the original Matrix palette, unchanged
+    for accent, (_, hex_value) in theme.ACCENTS.items():
+        c = theme.palette(accent)
+        assert c["ACCENT"] == hex_value and c["BG"] == "#050505" and c["ON_ACCENT"] == "#050505"
+        assert (c["GREEN"], c["AMBER"], c["RED"]) == ("#00FF66", "#FFCC00", "#FF3333")   # semantic, fixed
+    orange = theme.palette("orange")
+    assert orange["TEXT"] == "#FF6B1A" and orange["BORDER"] != green["BORDER"]
+    r, g, b = (int(orange["BORDER"][i:i + 2], 16) for i in (1, 3, 5))
+    assert r > g > b                                                         # an orange-tinted dark grey
+
+
+@pytest.mark.parametrize("font_id, family_check", [
+    ("vt323", lambda fam: fam == "VT323"),
+    ("mono", lambda fam: fam != "VT323"),
+    ("sans", lambda fam: fam != "VT323")])
+def test_font_preset_switches_in_place_and_is_saved(window, font_id, family_check):
+    app, win, ups = window
+    dlg = open_settings(app, win)
+    try:
+        if font_id == "vt323":                                    # from another font back to the default
+            QTest.mouseClick(dlg.button("sans"), Qt.LeftButton)
+        QTest.mouseClick(dlg.button(font_id), Qt.LeftButton)
+        app.processEvents()
+        t = theme.current()
+        assert t.font_id == font_id and dlg.button(font_id).isChecked()
+        assert family_check(theme.family())
+        sheet = QApplication_instance().styleSheet()
+        assert f"font-family: '{theme.family()}'" in sheet
+        assert ("VT323" in sheet) == (font_id == "vt323")
+        assert (theme.scale() > 1) == (font_id == "vt323")                   # only the pixel font is scaled up
+        assert win.view.horizontalHeader().font().family() == theme.family()
+        assert theme.mono_font(8).family() == theme.family(mono=True)
+        if font_id == "sans":
+            assert theme.family(mono=True) != theme.family() or not t.fixed  # versions stay monospace
+        assert settings.load()["font"] == font_id
+    finally:
+        dlg.close()
+
+
+def test_remembered_accent_and_font_apply_at_start(tmp_path, windows, runner):
+    settings.save(accent="cyan", font="mono")
     app, win = ui.create(engine.Context(manifest={"packages": []}), tmp_path)
-    assert theme.current().name == "clean" and win.btn_theme.text() == "[ CLEAN ]"
-    win.close()
-    app, win = ui.create(engine.Context(manifest={"packages": []}), tmp_path, theme="matrix")
-    assert theme.current().name == "matrix"
-    assert settings.load()["theme"] == "clean"                  # --theme is for one launch, not saved
-    win.close()
+    try:
+        assert theme.current().accent == "cyan" and theme.current().font_id == "mono"
+        assert theme.ACCENT == "#00E5FF" and "#00E5FF" in QApplication_instance().styleSheet()
+        dlg = open_settings(app, win)
+        assert dlg.button("cyan").isChecked() and dlg.button("mono").isChecked()
+        dlg.close()
+    finally:
+        win.close()
 
 
-def test_open_popover_is_closed_on_theme_change(window):
+def test_update_check_setting_is_saved_from_the_dialog(window):
+    app, win, _ = window
+    dlg = open_settings(app, win)
+    try:
+        dlg.check_updates.click()
+        app.processEvents()
+        assert settings.load()["check_updates"] is False
+        dlg.check_updates.click()
+        assert settings.load()["check_updates"] is True
+    finally:
+        dlg.close()
+
+
+def test_open_popover_is_closed_when_the_look_changes(window):
     app, win, ups = window
     win.open_details(win.model.index(row_of(win, ups["partial"]), COL_VERIFY))
     assert win.popover is not None
-    win.toggle_theme()
+    win.settings_changed({"accent": "amber"})
     assert win.popover is None
 
 
@@ -462,63 +563,36 @@ def _rule(sheet: str, selector: str, last: bool = True) -> str:
     return sheet[i:sheet.index("}", i)]
 
 
-def test_clean_theme_is_warm_carbon_with_orange_and_rounded_geometry():
-    assert theme.resolve("clean") is theme.CLEAN_THEME and theme.resolve("matrix") is theme.MATRIX_THEME
-    t = theme.set_current("clean")
-    try:
-        c = t.colors
-        assert (c["BG"], c["SURFACE"], c["HEADER"], c["BORDER"], c["BORDER_HOVER"]) == \
-            ("#111317", "#181B21", "#1E222A", "#2A2F3A", "#3D4452")
-        assert (c["ACCENT"], c["ACCENT_HOVER"], c["ACCENT_PRESSED"]) == ("#FF6B1A", "#FF823B", "#E0580C")
-        sheet = theme.stylesheet()
-        primary = _rule(sheet, "QPushButton#primary")
-        assert "background: #FF6B1A" in primary and "color: #FFFFFF" in primary and "font-weight: 700" in primary
-        assert "border-radius: 8px" in primary and "padding: 10px 20px" in primary and "border-top: 1px solid #FF823B" in primary
-        assert "background: #FF823B" in _rule(sheet, "QPushButton#primary:hover")
-        assert "background: #E0580C" in _rule(sheet, "QPushButton#primary:pressed")
-        disabled = _rule(sheet, "QPushButton#primary:disabled")
-        assert "background: #232730" in disabled and "color: #5A6270" in disabled
-        header = _rule(sheet, "QPushButton#headerButton", last=False)
-        assert "border-radius: 8px" in header and "padding: 6px 14px" in header and "border: 1px solid #2A2F3A" in header
-        assert "border-radius: 12px" in _rule(sheet, "QTableView", last=False)
-        assert "border-radius: 12px" in _rule(sheet, "QPlainTextEdit#log")
-        indicator = _rule(sheet, "QCheckBox::indicator")
-        assert "border-radius: 5px" in indicator
-        checked = _rule(sheet, "QCheckBox::indicator:checked")
-        assert "background: #FF6B1A" in checked and "check.png" in checked
-        bar = _rule(sheet, "QProgressBar#progress")
-        assert "background: #1E222A" in bar and "border-radius: 4px" in bar
-        chunk = _rule(sheet, "QProgressBar#progress::chunk")
-        assert "background: #FF6B1A" in chunk and "border-radius: 4px" in chunk
-        assert "Segoe UI" in t.fonts and "VT323" not in sheet
-        # pills: full pill shape, semantic colours and tints
-        assert (t.badge_radius, t.badge_height) == (11, 22)
-        b = t.badges
-        assert b["accent"][:2] == ("#FF8534", "#FF8534") and b["accent"][4] == ("#FF6B1A", 41)     # TO UPDATE, 16 %
-        assert b["uptodate"][0] == "#6E7787" and b["uptodate"][4] == "#1E222A"                   # UP TO DATE
-        assert b["full"][:2] == ("#3DD68C", "#3DD68C") and b["full"][4] == ("#2ECC71", 36)      # FULL, 14 %
-        assert b["partial"][:2] == ("#F5B041", "#F5B041") and b["partial"][4] == ("#F5B041", 38)
-        assert b["none"][:2] == ("#EB5757", "#EB5757") and b["none"][4] == ("#EB5757", 38)
-        for name in ("check.png", "check@2x.png", "dash.png", "dash@2x.png"):
-            assert (theme.ICONS / name).is_file()
-        spec = (__import__("pathlib").Path(__file__).resolve().parents[1] / "packaging" / "windows" / "driver-installer.spec").read_text()
-        assert '"ui", "assets", "icons"' in spec                       # bundled into DriverInstaller.exe
-        assert theme.badge_text("To update") == "TO UPDATE"
-    finally:
-        theme.set_current("matrix")
+def test_one_matrix_design_with_sharp_geometry():
+    assert not hasattr(theme, "CLEAN") and not hasattr(theme, "CLEAN_THEME")
     with pytest.raises(ValueError):
-        theme.set_current("neon")
+        theme.configure(accent="neon")
+    with pytest.raises(ValueError):
+        theme.configure(font="comic")
+    for accent in theme.ACCENTS:
+        for font_id in theme.FONTS:
+            t = theme.configure(accent=accent, font=font_id)
+            assert t.name == theme.MATRIX and (t.radius, t.panel_radius, t.badge_radius) == (3, 3, 3)
+            assert t.uppercase and theme.badge_text("To update") == "TO UPDATE"
+            sheet = theme.stylesheet()
+            assert "border-radius: 0px" in _rule(sheet, "QProgressBar#progress")
+            assert "border-radius: 2px" in _rule(sheet, "QCheckBox::indicator")
+            assert "check.png" in _rule(sheet, "QCheckBox::indicator:checked")
+    theme.configure(accent="green", font="vt323")
+    for name in ("check.png", "check@2x.png", "dash.png", "dash@2x.png"):
+        assert (theme.ICONS / name).is_file()
+    spec = (__import__("pathlib").Path(__file__).resolve().parents[1] / "packaging" / "windows" / "driver-installer.spec").read_text()
+    assert '"ui", "assets", "icons"' in spec                       # bundled into DriverInstaller.exe
 
 
-@pytest.mark.parametrize("theme_name", ["matrix", "clean"])
-def test_confirmation_with_many_partial_drivers_fits_the_screen(window, theme_name):
+@pytest.mark.parametrize("font_id", ["vt323", "sans"])
+def test_confirmation_with_many_partial_drivers_fits_the_screen(window, font_id):
     """12 Partial drivers: the dialog stays within 75 % of the screen (and 580 px), the notes
     scroll in their own box, and Install / Cancel stay visible below it without scrolling."""
     from PySide6.QtWidgets import QPlainTextEdit
     from ui import dialogs
     app, win, _ = window
-    if theme.current().name != theme_name:
-        win.toggle_theme()
+    win.settings_changed({"font": font_id})
     many = [make_update(f"Partial device {n:02d} with a long vendor name", PARTIAL_CHECKS, pid=f"p{n}")
             for n in range(12)]
     title, text, details, label = dialogs.install_confirmation(many, ["pnputil /add-driver x.inf"] * 12)
@@ -553,8 +627,6 @@ def test_confirmation_with_many_partial_drivers_fits_the_screen(window, theme_na
         assert dlg.result() == dialogs.QDialog.Accepted
     finally:
         dlg.close()
-        if theme.current().name != "matrix":
-            win.toggle_theme()
 
 
 # --------------------------------------------------------- layout polish
@@ -578,31 +650,29 @@ def test_long_status_is_elided_and_never_touches_the_counter(window):
     assert win.status.shown_text().endswith("Ready.") and win.status.toolTip() == ""
 
 
-@pytest.mark.parametrize("name", ["matrix", "clean"])
-def test_header_controls_share_one_style_and_height(window, name):
+@pytest.mark.parametrize("font_id", ["vt323", "mono", "sans"])
+def test_header_controls_share_one_style_and_height(window, font_id):
     app, win, _ = window
-    if theme.current().name != name:
-        win.toggle_theme()
+    win.settings_changed({"font": font_id})
+    win.on_update_result(True)
     win.show()
     app.processEvents()
-    buttons = (win.btn_log, win.btn_theme, win.btn_rescan)
-    assert {b.objectName() for b in buttons} == {"headerButton"}
+    buttons = (win.btn_log, win.btn_update, win.btn_settings, win.btn_rescan)
+    assert {b.objectName() for b in buttons} == {"headerButton", "updateButton"}
     assert len({b.height() for b in buttons}) == 1
     assert len({b.geometry().center().y() for b in buttons}) == 1             # same vertical alignment
-    rule = _rule(theme.stylesheet(), "QPushButton#headerButton", last=False)
+    rule = _rule(theme.stylesheet(), "QPushButton#headerButton, QPushButton#updateButton", last=False)
     assert "border: 1px solid" in rule
     assert "QPushButton#headerButton:hover" in theme.stylesheet()
     assert all(b.focusPolicy() == Qt.TabFocus for b in buttons) and win.view.hasFocus()
-    if name != "matrix":
-        win.toggle_theme()
 
 
 def test_row_spinners_line_up_in_one_column_centred_on_the_pill():
     from PySide6.QtCore import QRect, QRectF
     from PySide6.QtGui import QColor, QImage, QPainter
     from ui import delegates
-    for name in ("matrix", "clean"):
-        theme.set_current(name)
+    for name in theme.FONTS:
+        theme.configure(font=name)
         cell = QRect(500, 100, 190, theme.current().row_height)
         rects = {delegates.BadgeDelegate.spinner_rect(cell, text) for text in ("Queued", "Scanning…", "Checking…")}
         assert len(rects) == 1                                                  # same x whatever the pill says
@@ -618,23 +688,6 @@ def test_row_spinners_line_up_in_one_column_centred_on_the_pill():
             p.end()
             rows = [y for y in range(40) if any(img.pixelColor(x, y).alpha() > 60 for x in range(40))]
             assert abs((rows[0] + rows[-1]) / 2 - 19.5) <= 0.5, (name, step)
-    theme.set_current("matrix")
+    theme.configure(font="vt323")
 
 
-def test_clean_rows_are_clipped_to_the_rounded_table(window):
-    app, win, _ = window
-    win.show()
-    app.processEvents()
-    port = win.view.viewport()
-    assert port.mask().isEmpty()                                                 # Matrix: square corners
-    win.toggle_theme()
-    app.processEvents()
-    mask, r = port.mask(), port.rect()
-    assert not mask.isEmpty()
-    assert not mask.contains(r.bottomLeft()) and not mask.contains(r.bottomRight())
-    assert mask.contains(r.center()) and mask.contains(r.topLeft())
-    win.resize(win.width() + 40, win.height() + 30)                              # follows resizes
-    app.processEvents()
-    assert win.view.viewport().mask().boundingRect().width() == port.width()
-    win.toggle_theme()
-    assert port.mask().isEmpty()

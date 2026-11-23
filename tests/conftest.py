@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from core import common, elevation, engine, installer, manifest, trust, verifier
+from core import common, elevation, engine, installer, manifest, trust, updates, verifier
 from core.security import loldrivers
+from ui import settings as ui_settings, theme as ui_theme
 
 FIXTURES = Path(__file__).parent / "fixtures"
 REAL_LOLDRIVERS_FETCH = loldrivers.fetch          # the autouse fixture below replaces it with a canned feed
@@ -63,8 +64,16 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(elevation, "HELPER_LINUX_PACKAGED", str(tmp_path / "no-packaged-helper"))
     monkeypatch.setattr(engine, "AUTO_DISCOVER", False)          # no test talks to the internet by accident
     monkeypatch.setattr(loldrivers, "fetch", lambda *a, **k: canned_blocklist())
+    monkeypatch.setattr(updates, "OPENER", _no_network)          # nor to GitHub's release API
+    monkeypatch.setattr(ui_settings, "SYSTEM_FILE", tmp_path / "etc" / "ui.json")
     common.init_audit(tmp_path / "audit.jsonl")
+    ui_theme.configure(accent=ui_theme.DEFAULT_ACCENT, font=ui_theme.DEFAULT_FONT)
     yield
+    ui_theme.configure(accent=ui_theme.DEFAULT_ACCENT, font=ui_theme.DEFAULT_FONT)
+
+
+def _no_network(request, timeout=None):
+    raise OSError(f"tests do not reach {getattr(request, 'full_url', request)}")
 
 
 @pytest.fixture

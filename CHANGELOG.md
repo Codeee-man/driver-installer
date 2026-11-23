@@ -6,6 +6,30 @@ each tag's GitHub Release shows its section from this file above the downloads
 
 ## [Unreleased]
 
+### Added
+- **[ SETTINGS ]** replaces the theme toggle in the header: a compact dialog with the accent
+  colour (Matrix Green `#00FF66`, Vivid Orange `#FF6B1A`, Cyan `#00E5FF`, Amber `#FFB000`,
+  Silver `#E4E8EF`), the font (VT323, Mono, Sans) and "Check for updates on startup". Changes
+  apply at once to the whole window (borders, title, badges, buttons, progress bar, LOG,
+  dialogs) and are saved in `ui.json`. Full / Partial / None stay green / amber / red whatever
+  the accent.
+- **Update available.** When enabled (the default), the window asks GitHub's
+  `releases/latest` API once per start, in the background (3 s timeout, silent when offline or
+  rate-limited, only the program name and version are sent). If a newer release exists, an
+  UPDATE AVAILABLE button appears in the header, without a version number; it opens the
+  release page in the browser. There is never a popup.
+- `tools/screenshots.py` renders the README screenshots headlessly.
+
+### Changed
+- **One design.** The separate Clean theme and `gui --theme` are gone; the Matrix terminal look
+  (sharp 1 px borders, capitals and brackets) is the only one, restyled by the Settings presets.
+  An old `"theme"` entry in `ui.json` is ignored.
+- **Identical devices are shown once.** Windows lists every logical CPU as its own device, so a
+  16-thread CPU appeared 16 times. Devices with the same name, model (hardware ID), driver
+  package (INF), installed version and state are now one row with a subtle `×16` (`x16` in
+  `scan`, `instances` in `scan --json`). The merged entry keeps every instance ID and hardware
+  ID, so update matching and `pnputil` still cover all of them.
+
 ### Fixed
 - **No more false "administrator rights … UAC prompt was declined" message when Setup is first
   started.** Inno Setup's loader starts without rights (`asInvoker`) and restarts itself

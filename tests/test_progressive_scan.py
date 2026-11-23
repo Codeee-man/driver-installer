@@ -279,17 +279,14 @@ def test_install_pulses_the_progress_bar_until_it_finishes(tmp_path, windows, ru
 
 
 # ------------------------------------------------------------------- theme
-@pytest.mark.parametrize("name, track, fill, border", [
-    ("matrix", "#050505", "#00FF66", "#1A3320"),
-    ("clean", "#1E222A", "#FF6B1A", "#2A2F3A")])
-def test_progress_bar_is_styled_per_theme(tmp_path, name, track, fill, border):
+@pytest.mark.parametrize("accent, fill, border", [
+    ("green", "#00FF66", "#1A3320"),
+    ("orange", "#FF6B1A", None)])
+def test_progress_bar_follows_the_accent(tmp_path, accent, fill, border):
     gui.create(engine.Context(manifest={"packages": []}), tmp_path)
-    theme.set_current(name)
-    try:
-        sheet = theme.stylesheet()
-        bar = sheet[sheet.index("QProgressBar#progress {"):sheet.index("QLabel#counter")]
-        assert f"background: {track}; border: 1px solid {border}" in bar and fill in bar
-        counter = sheet[sheet.index("QLabel#counter"):]
-        assert ("VT323" in counter[:200]) == (name == "matrix")
-    finally:
-        theme.set_current("matrix")
+    theme.configure(accent=accent)
+    sheet = theme.stylesheet()
+    bar = sheet[sheet.index("QProgressBar#progress {"):sheet.index("QLabel#counter")]
+    assert f"background: #050505; border: 1px solid {border or theme.BORDER}" in bar and fill in bar
+    counter = sheet[sheet.index("QLabel#counter"):]
+    assert "VT323" in counter[:200]

@@ -6,15 +6,37 @@ a dry-run default.
 
 ```
 pip install cryptography PySide6 pytest
-python -m pytest -q                                  # 423 tests, no admin rights or internet needed
+python -m pytest -q                                  # 454 tests, no admin rights or internet needed
 
 python src/cli.py scan                               # hardware vs. manifest (table, or --json)
 python src/cli.py check --notify                     # exit 0 up to date, 1 updates, 2+ error
 python src/cli.py update --all                       # download, verify, print the plan (dry run)
 python src/cli.py update --all --apply -y            # unattended install
 python src/cli.py gui --demo                         # GUI with fake packages; never installs
-python src/cli.py gui --theme clean                  # "matrix" (default) or "clean"; the in-app toggle is remembered
+QT_QPA_PLATFORM=offscreen python tools/screenshots.py   # re-render docs/img/ui-main.png and ui-settings.png
 ```
+
+![Driver Installer: main window](docs/img/ui-main.png)
+
+The window has one design, a Matrix-style terminal: sharp 1 px borders, capitals and brackets on
+the controls. **[ SETTINGS ]** in the header picks the accent colour (Matrix Green, Vivid Orange,
+Cyan, Amber, Silver), the font (VT323, Mono, Sans) and whether to check for a newer release on
+startup; every change applies at once and is remembered in `ui.json`
+(`~/.config/driver-installer/` or `%APPDATA%\driver-installer\`). Full / Partial / None keep
+their green / amber / red whatever the accent.
+
+![The Settings dialog](docs/img/ui-settings.png)
+
+Identical devices are shown once: Windows lists every logical CPU as its own device, so a
+16-thread CPU is one row marked `×16` (`x16` in `scan`). The merged entry keeps all 16 instance
+IDs, so update matching and the install still cover each of them. Devices are merged only when
+name, model ID, driver package and installed version all match.
+
+The update check (on by default, off in Settings) asks
+`api.github.com/repos/Codeee-man/driver-installer/releases/latest` once per start, in the
+background, with a 3 s timeout. It sends nothing but the program name and version; offline or
+rate-limited, it stays silent. When a newer release exists, an **UPDATE AVAILABLE** button
+appears in the header and opens the release page; nothing is downloaded by itself.
 
 Without a manifest the tool discovers updates itself: on Windows, Windows Update (the drivers
 Windows offers this PC) plus the Microsoft Update Catalog searched by hardware ID (hardware IDs
@@ -70,6 +92,9 @@ src/
     installer.py              unpack, pnputil / fwupd / package manager
     elevation.py              which helper to elevate, UAC / pkexec / sudo
     restore.py, manifest.py, trust.py, model.py, common.py, diagnostics.py
+    updates.py                startup check for a newer release (GitHub API, 3 s, silent on errors)
+  ui/                         the window: theme.py (accent + font presets), settings.py (ui.json),
+                              settings_dialog.py ([ SETTINGS ]), models.py, delegates.py, main_window.py
 packaging/windows/            PyInstaller spec, Inno Setup script (DriverInstaller-Setup.exe)
 tools/
   build_windows.py, build_linux.py, build_common.py   release builds (zip + Setup.exe, .deb + AppImage)
@@ -78,6 +103,7 @@ tools/
   install_helper.sh|.ps1      protected helper from a source checkout
   pin_key.sh, keygen.py, sign_manifest.py, builder.py   manifest keys and signing
   changelog.py                CHANGELOG.md section for a release's notes
+  screenshots.py              headless README screenshots (main window, Settings)
 schema/                       manifest schema 1.1 and an example
 contrib/                      systemd user units, polkit policy, desktop file, icons
 docs/                         ARCHITECTURE.md, PHASE2.md, SIGNING.md, TESTING_WINDOWS.md
@@ -85,4 +111,4 @@ tests/                        pytest suite with recorded WMI fixtures and loopba
 .github/workflows/            ci.yml (tests on push), build.yml (release builds on v* tags)
 ```
 
-The Matrix theme uses the bundled VT323 font (SIL Open Font License, `src/ui/assets/fonts/VT323-OFL.txt`).
+The default font is the bundled VT323 (SIL Open Font License, `src/ui/assets/fonts/VT323-OFL.txt`).

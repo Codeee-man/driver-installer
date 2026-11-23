@@ -21,6 +21,14 @@ class Device:
     driver_file: str = ""           # Windows: path of the .sys behind the service
     driver_date: str = ""           # ISO date
     signed: bool | None = None
+    # Every device instance this entry stands for (Windows PNPDeviceIDs, Linux bus addresses).
+    # Empty or one entry: a single device. More: identical devices merged by dedupe_devices().
+    instances: list[str] = dataclasses.field(default_factory=list)
+
+    @property
+    def count(self) -> int:
+        """How many identical device instances this entry stands for (at least 1)."""
+        return max(len(self.instances), 1)
 
 
 # Itemised verification. Every update carries one record per check, in this order, so a
@@ -134,4 +142,54 @@ def normalise_windows_id(raw: str) -> list[str]:
     if m:
         out.append(f"usb:{m.group(1).lower()}:{m.group(2).lower()}")
     out.append("raw:" + raw.lower())
+    return out
+
+
+# ------------------------------------------------------------- duplicates
+def _base_id(device: Device) -> str:
+    """The device's model, not its instance: the first hardware ID that is not its own instance
+    path (PNPDeviceID ends in a per-instance suffix: ...\\_0, ...\\_1, ...\\3&11583659&0&FF);
+    for PCI and USB that is the normalised pci:/usb: ID, otherwise the most specific HardwareID."""
+    own = "raw:" + device.address.lower()
+    return next((h for h in device.hardware_ids if h != own), "")
+
+
+def duplicate_key(device: Device) -> tuple | None:
+    """Devices with equal keys are the same hardware with the same driver in the same state:
+    same name, model (base hardware ID), driver package (INF) and installed version, and the
+    same notes (a problem code on one instance keeps it apart). None: never merged (fwupd
+    devices are installed by their own address; nothing to compare without a model ID or INF)."""
+    if device.kind == "fwupd":
+        return None
+    base, inf = _base_id(device), device.inf.lower()
+    if not (base or inf):
+        return None
+    name = " ".join(device.name.split()).casefold()
+    return (name, device.kind, base or inf, inf, device.driver_version, device.driver_date,
+            device.signed, tuple(device.notes))
+
+
+def dedupe_devices(devices: list[Device]) -> list[Device]:
+    """One entry per distinct device, in first-seen order. Windows lists, for example, every
+    logical CPU as its own device (16 x "12th Gen Intel(R) Core(TM) i5-12500H" with the same
+    driver); they become one Device whose `instances` holds all 16 instance IDs and whose
+    hardware_ids holds the union of theirs, so update matching and pnputil (which installs a
+    driver on every device it matches) still cover each instance."""
+    merged: dict[tuple, Device] = {}
+    out: list[Device] = []
+    for device in devices:
+        key = duplicate_key(device)
+        first = merged.get(key) if key is not None else None
+        if first is None:
+            device.instances = list(dict.fromkeys(device.instances or ([device.address] if device.address else [])))
+            out.append(device)
+            if key is not None:
+                merged[key] = device
+            continue
+        for inst in device.instances or [device.address]:
+            if inst and inst not in first.instances:
+                first.instances.append(inst)
+        for hid in device.hardware_ids:
+            if hid not in first.hardware_ids:
+                first.hardware_ids.append(hid)
     return out

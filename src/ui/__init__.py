@@ -4,8 +4,9 @@ Layout: a centred title, one table of devices (Device / Status / Verification / 
 and a bottom bar with "Select all fully checked" and "Download and Install".
 
 Modules
-  theme.py         the "Matrix" (pixel font, neon green) and "Clean" themes; fonts; stylesheet
-  settings.py      remembered preferences (theme) in ~/.config/driver-installer/ui.json
+  theme.py         the Matrix look: accent colour and font presets, fonts, stylesheet
+  settings.py      remembered preferences (accent, font, update check) in ui.json
+  settings_dialog.py  the [ SETTINGS ] dialog
   verification.py  no Qt: Full / Partial / None from an update's check records, and the texts
   models.py        DriverTableModel: rows, selection, "select all fully checked"
   delegates.py     painted badges, the (?) help target, two-line device cell, centred checkbox
@@ -19,17 +20,18 @@ This package imports Qt lazily, so `ui.verification` can be used without PySide6
 from __future__ import annotations
 
 
-def create(ctx, workdir, autoscan: bool = False, theme: str | None = None):
-    """Build the application and main window; returns (app, window). `theme` overrides the
-    remembered choice for this launch ("matrix" or "clean")."""
+def create(ctx, workdir, autoscan: bool = False):
+    """Build the application and main window with the remembered accent and font; returns
+    (app, window)."""
     from .main_window import create as _create
-    return _create(ctx, workdir, autoscan=autoscan, theme_name=theme)
+    return _create(ctx, workdir, autoscan=autoscan)
 
 
-def run(ctx, workdir, shot: str | None = None, theme: str | None = None) -> int:
-    """Open the window, start scanning straight away, and run the event loop."""
+def run(ctx, workdir, shot: str | None = None) -> int:
+    """Open the window, start scanning straight away (and, when enabled in Settings, the
+    background check for a newer release), and run the event loop."""
     from .main_window import run as _run
-    return _run(ctx, workdir, shot, theme_name=theme)
+    return _run(ctx, workdir, shot)
 
 
 def settle(app, win, timeout: float = 60.0) -> None:

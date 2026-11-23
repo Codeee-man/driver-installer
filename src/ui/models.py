@@ -28,6 +28,7 @@ HelpRole = Qt.UserRole + 3         # True where the (?) target is drawn (Partial
 RowRole = Qt.UserRole + 4          # the DriverRow
 MutedRole = Qt.UserRole + 5        # True for rows without an update
 SpinnerRole = Qt.UserRole + 6      # True while the row is queued, being looked up or being verified
+CountRole = Qt.UserRole + 7        # identical device instances behind the row (×16 when > 1)
 
 QUEUED, SCANNING, DONE, NOT_CHECKED = "queued", "scanning", "done", "not-checked"
 
@@ -277,6 +278,8 @@ class DriverTableModel(QAbstractTableModel):
             return u is None and r.phase == DONE
         if role == SpinnerRole:
             return col == COL_STATUS and r.spinning
+        if role == CountRole:
+            return getattr(r.device, "count", 1)
         if col == COL_DEVICE:
             if role == Qt.DisplayRole:
                 return r.device.name
@@ -286,9 +289,14 @@ class DriverTableModel(QAbstractTableModel):
                     return f"{installed} · " + {QUEUED: "waiting to look for updates", SCANNING: "looking for updates…",
                                                 NOT_CHECKED: "not checked"}.get(r.phase, "no newer driver found")
                 return f"{u.installed} → {u.available} · {u.source}"
+            if role == Qt.AccessibleTextRole:
+                n = getattr(r.device, "count", 1)
+                return f"{r.device.name}, {n} identical devices" if n > 1 else r.device.name
             if role == Qt.ToolTipRole:
                 ids = ", ".join(h for h in r.device.hardware_ids if not h.startswith("raw:"))[:200]
-                return f"{r.device.name}\n{ids}" if ids else r.device.name
+                n = getattr(r.device, "count", 1)
+                same = f"\n{n} identical devices (same model, driver and version), shown once" if n > 1 else ""
+                return (f"{r.device.name}\n{ids}" if ids else r.device.name) + same
         elif col == COL_STATUS:
             text, kind = vf.row_status(u, r.outcome, r.phase)
             if role in (Qt.DisplayRole, Qt.AccessibleTextRole):

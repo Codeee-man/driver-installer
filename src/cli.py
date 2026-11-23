@@ -6,7 +6,7 @@
     driver-installer update --all                    download, verify, print the plan (DRY RUN)
     driver-installer update --all --apply [-y]       ...then confirm, elevate and install
     driver-installer update ID [ID ...] --apply      only the named packages
-    driver-installer gui [--demo] [--theme matrix|clean]
+    driver-installer gui [--demo]
     driver-installer verify-log
 
 Nothing is installed without --apply. With --apply, -y/--yes skips the
@@ -92,8 +92,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     gui = sub.add_parser("gui", parents=[shared], help="open the graphical interface")
     gui.add_argument("--demo", action="store_true", help="fake local manifest with one tampered package")
-    gui.add_argument("--theme", choices=("matrix", "clean"),
-                     help="start with this theme (default: the one chosen last time in the window, else matrix)")
     gui.add_argument("--screenshot", help=argparse.SUPPRESS)
 
     sub.add_parser("verify-log", parents=[shared], help="check the audit log hash chain")
@@ -171,13 +169,19 @@ def table(headers: list[str], rows: list[list[str]], widths: list[int]) -> str:
     return "\n".join([line(headers), rule, *(line(r) for r in rows)])
 
 
+def shown_name(device) -> str:
+    """Device name, with "x16" when 16 identical devices were merged into this one entry."""
+    count = getattr(device, "count", 1)
+    return f"{device.name} x{count}" if count > 1 else device.name
+
+
 def print_scan(devices, updates, have_manifest: bool) -> None:
     pending = {id(u.device) for u in updates}
-    rows = [[u.device.name, u.installed or "-", u.available, "UPDATE", update_id(u)] for u in updates]
+    rows = [[shown_name(u.device), u.installed or "-", u.available, "UPDATE", update_id(u)] for u in updates]
     for d in devices:
         if id(d) not in pending:
             state = "; ".join(d.notes) if d.notes else ("up to date" if have_manifest and d.driver_version else "-")
-            rows.append([d.name, d.driver_version or "-", "-", state, d.hardware_ids[0] if d.hardware_ids else "-"])
+            rows.append([shown_name(d), d.driver_version or "-", "-", state, d.hardware_ids[0] if d.hardware_ids else "-"])
     print(table(["DEVICE", "INSTALLED", "AVAILABLE", "STATUS", "ID"], rows, [44, 24, 16, 30, 40]))
     print(f"\n{len(devices)} devices, {len(updates)} update(s) available."
           + ("" if have_manifest else " No manifest loaded."))
@@ -335,7 +339,7 @@ def cmd_gui(args) -> int:
               "or `pip install PySide6`. The command line works without it.", file=sys.stderr)
         return EXIT_FAILED
     with tempfile.TemporaryDirectory(prefix="safedriver-demo-") as tmp:
-        return gui.run(load_context(args), Path(tmp), args.screenshot, theme=args.theme)
+        return gui.run(load_context(args), Path(tmp), args.screenshot)
 
 
 def main(argv: list[str] | None = None) -> int:

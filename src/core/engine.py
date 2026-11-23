@@ -33,7 +33,7 @@ from . import common, elevation, installer, manifest, restore, trust, verifier
 from .common import ElevationError, InstallError, VerificationError
 from .discovery import linux_lvfs, ms_catalog
 from .model import (AT_INSTALL, CHECK_ORDER, CHECK_SHORT, FAILED, NOT_APPLICABLE, PASSED, SKIPPED, Device, Update,
-                    compare_versions)
+                    compare_versions, dedupe_devices)
 from .security import loldrivers
 
 MAX_PLAN_ITEMS = 64
@@ -71,6 +71,12 @@ def scan() -> tuple[list[Device], dict[str, dict]]:
         devices, upgrades = scanner_linux.scan()
     else:
         raise InstallError(f"{common.OS_NAME} is not supported")
+    found = len(devices)
+    devices = dedupe_devices(devices)
+    merged = [(d.name, d.count) for d in devices if d.count > 1]
+    if merged:
+        common.audit("scan.deduplicated", instances=found, devices=len(devices),
+                     merged=[f"{name} x{n}" for name, n in merged[:20]])
     common.audit("scan.done", devices=len(devices), fwupd_upgrades=len(upgrades))
     return devices, upgrades
 

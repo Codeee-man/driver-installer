@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate, QToolTip
 
 from . import theme
-from .models import COL_STATUS, BadgeRole, HelpRole, MutedRole, SpinnerRole, SubtitleRole
+from .models import COL_STATUS, BadgeRole, CountRole, HelpRole, MutedRole, SpinnerRole, SubtitleRole
 
 PAD_X = 12
 HELP_D = 16
@@ -57,27 +57,18 @@ class Spinner(QObject):
 
 
 def paint_spinner(painter, rect: QRectF, step: int, color: QColor) -> None:
-    if theme.current().name == theme.MATRIX:
-        # The terminal spinner | / - \ drawn as square-capped 2 px strokes through the centre of
-        # the box: fonts report unreliable bounds for these glyphs (VT323 puts "-" 2 px high), so
-        # characters would bob up and down between frames.
-        frame = step % len(TERMINAL_FRAMES)
-        half = rect.height() / 2 - 2
-        dx, dy = ((0, half), (half * 0.75, -half), (half, 0), (half * 0.75, half))[frame]
-        c = rect.center()
-        pen = QPen(color, 2)
-        pen.setCapStyle(Qt.SquareCap)
-        painter.setPen(pen)
-        painter.setRenderHint(QPainter.Antialiasing, frame in (1, 3))
-        painter.drawLine(QPointF(c.x() - dx, c.y() - dy), QPointF(c.x() + dx, c.y() + dy))
-        return
-    pen = QPen(color, 1.8)
-    pen.setCapStyle(Qt.RoundCap)
+    """The terminal spinner | / - \\ drawn as square-capped 2 px strokes through the centre of
+    the box: fonts report unreliable bounds for these glyphs (VT323 puts "-" 2 px high), so
+    characters would bob up and down between frames."""
+    frame = step % len(TERMINAL_FRAMES)
+    half = rect.height() / 2 - 2
+    dx, dy = ((0, half), (half * 0.75, -half), (half, 0), (half * 0.75, half))[frame]
+    c = rect.center()
+    pen = QPen(color, 2)
+    pen.setCapStyle(Qt.SquareCap)
     painter.setPen(pen)
-    painter.setBrush(Qt.NoBrush)
-    arc = rect.adjusted(2, 2, -2, -2)
-    # Qt angles: 1/16 degree, counter-clockwise; minus = clockwise rotation
-    painter.drawArc(arc, int(-step * (360 / Spinner.STEPS) * 16), 270 * 16)
+    painter.setRenderHint(QPainter.Antialiasing, frame in (1, 3))
+    painter.drawLine(QPointF(c.x() - dx, c.y() - dy), QPointF(c.x() + dx, c.y() + dy))
 
 
 def badge_style(kind: str) -> tuple:
@@ -124,8 +115,18 @@ class NameDelegate(_Base):
         painter.setFont(name_font)
         painter.setPen(_color(theme.SLATE if muted else theme.TEXT))
         fm = QFontMetrics(name_font)
-        painter.drawText(QRect(rect.left(), rect.top(), rect.width(), fm.height()), Qt.AlignLeft | Qt.AlignVCenter,
-                         fm.elidedText(index.data(Qt.DisplayRole) or "", Qt.ElideRight, rect.width()))
+        count = index.data(CountRole) or 1
+        tag = f"×{count}" if count > 1 else ""            # identical devices merged into this row
+        tag_font = theme.mono_font(8)
+        tfm = QFontMetrics(tag_font)
+        tag_w = tfm.horizontalAdvance(tag) + 8 if tag else 0
+        name = fm.elidedText(index.data(Qt.DisplayRole) or "", Qt.ElideRight, max(rect.width() - tag_w, 10))
+        painter.drawText(QRect(rect.left(), rect.top(), rect.width(), fm.height()), Qt.AlignLeft | Qt.AlignVCenter, name)
+        if tag:
+            painter.setFont(tag_font)
+            painter.setPen(_color(theme.SLATE_DIM if muted else theme.MUTED_DIM))
+            x = rect.left() + fm.horizontalAdvance(name) + 8
+            painter.drawText(QRect(x, rect.top(), tag_w, fm.height()), Qt.AlignLeft | Qt.AlignVCenter, tag)
         sub = index.data(SubtitleRole) or ""
         if sub:
             painter.setFont(sub_font)
@@ -159,7 +160,7 @@ class BadgeDelegate(_Base):
     @staticmethod
     def badge_font():
         t = theme.current()
-        return theme.font(8, bold=True, spacing=t.letter_spacing or None, mono=t.name == theme.MATRIX)
+        return theme.font(8, bold=True, spacing=t.letter_spacing or None, mono=t.fixed)
 
     @classmethod
     def badge_rect(cls, cell: QRect, text: str, kind: str | None = None) -> QRect:
@@ -260,8 +261,7 @@ class CheckDelegate(_Base):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(QPen(_color(theme.ACCENT if (checked or hovered) else theme.MUTED), 1))
         painter.setBrush(_color(theme.ACCENT) if checked else _color(theme.BG))
-        corner = 2 if theme.current().name == theme.MATRIX else 4
-        painter.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), corner, corner)
+        painter.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), 2, 2)
         if checked:
             pen = QPen(_color(theme.ON_ACCENT), 2)
             pen.setCapStyle(Qt.RoundCap)
