@@ -667,6 +667,34 @@ def test_header_controls_share_one_style_and_height(window, font_id):
     assert all(b.focusPolicy() == Qt.TabFocus for b in buttons) and win.view.hasFocus()
 
 
+@pytest.mark.parametrize("font_id", ["vt323", "sans"])
+def test_update_button_sits_after_log_and_the_title_stays_centred(window, font_id):
+    app, win, _ = window
+    win.settings_changed({"font": font_id})
+    win.resize(1000, 560)
+    win.show()
+
+    def centre_offset():
+        app.processEvents()
+        title = win.title.mapTo(win, win.title.rect().center()).x()
+        label_width = win.title.fontMetrics().horizontalAdvance(win.title.text())
+        assert win.title.width() >= label_width                        # the title is never squeezed
+        return title - win.width() / 2
+
+    for visible in (False, True, False):
+        win.on_update_result(visible)
+        assert abs(centre_offset()) <= 1, visible
+        assert win.btn_update.isVisible() == visible
+    win.on_update_result(True)
+    app.processEvents()
+    log, upd = win.btn_log.geometry(), win.btn_update.geometry()
+    settings_btn, rescan = win.btn_settings.geometry(), win.btn_rescan.geometry()
+    assert win.btn_update.parent() is win.btn_log.parent() is win.header_left
+    assert upd.left() - log.right() == rescan.left() - settings_btn.right()   # same gap as on the right
+    assert upd.right() < win.title.mapTo(win.header_left.parent(), win.title.rect().topLeft()).x()
+    assert win.btn_settings.parent() is win.header_right
+
+
 def test_row_spinners_line_up_in_one_column_centred_on_the_pill():
     from PySide6.QtCore import QRect, QRectF
     from PySide6.QtGui import QColor, QImage, QPainter

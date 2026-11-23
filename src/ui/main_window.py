@@ -123,7 +123,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 14, 20, 16)
         layout.setSpacing(12)
 
-        # header: [log]   Driver Installer   [update available] [settings] [rescan]
+        # header: [log] [update available]   Driver Installer   [settings] [rescan]
         header = QGridLayout()
         header.setColumnStretch(0, 1)
         header.setColumnStretch(2, 1)
@@ -139,14 +139,23 @@ class MainWindow(QMainWindow):
         for b in (self.btn_log, self.btn_update, self.btn_settings, self.btn_rescan):
             b.setCursor(Qt.PointingHandCursor)
             b.setFocusPolicy(Qt.TabFocus)          # a click does not leave a focus ring; Tab still reaches it
-        right = QHBoxLayout()
-        right.setSpacing(8)
-        right.addWidget(self.btn_update)
-        right.addWidget(self.btn_settings)
-        right.addWidget(self.btn_rescan)
-        header.addWidget(self.btn_log, 0, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        # Two equally wide side groups with equal stretch keep the title centred on the window,
+        # whether or not UPDATE AVAILABLE is showing (balance_header evens out their widths).
+        self.header_left, self.header_right = QWidget(), QWidget()
+        for side, buttons, align in ((self.header_left, (self.btn_log, self.btn_update), Qt.AlignLeft),
+                                     (self.header_right, (self.btn_settings, self.btn_rescan), Qt.AlignRight)):
+            box = QHBoxLayout(side)
+            box.setContentsMargins(0, 0, 0, 0)
+            box.setSpacing(8)
+            if align == Qt.AlignRight:
+                box.addStretch(1)
+            for b in buttons:
+                box.addWidget(b, 0, Qt.AlignVCenter)
+            if align == Qt.AlignLeft:
+                box.addStretch(1)
+        header.addWidget(self.header_left, 0, 0)
         header.addWidget(self.title, 0, 1)
-        header.addLayout(right, 0, 2, Qt.AlignRight | Qt.AlignVCenter)
+        header.addWidget(self.header_right, 0, 2)
         layout.addLayout(header)
         layout.addWidget(QFrame(objectName="rule"))
 
@@ -242,6 +251,7 @@ class MainWindow(QMainWindow):
         self.btn_rescan.setText(labels["rescan"])
         self.btn_settings.setText(labels["settings"])
         self.btn_update.setText(labels["update"])
+        self.balance_header()
         if self.popover is not None:
             try:
                 self.popover.close()
@@ -281,6 +291,13 @@ class MainWindow(QMainWindow):
 
     def on_update_result(self, newer: bool) -> None:
         self.btn_update.setVisible(bool(newer))
+        self.balance_header()
+
+    def balance_header(self) -> None:
+        """Give both header sides the width of the wider one, so the title stays centred."""
+        width = max(self.header_left.sizeHint().width(), self.header_right.sizeHint().width())
+        self.header_left.setMinimumWidth(width)
+        self.header_right.setMinimumWidth(width)
 
     def open_release_page(self) -> None:
         QDesktopServices.openUrl(QUrl(updates.RELEASES_PAGE))
