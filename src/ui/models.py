@@ -156,6 +156,8 @@ class DriverTableModel(QAbstractTableModel):
         """Updates first (Full, Partial, pending, None), then rows still being looked up in
         enumeration order (so they do not jump around), then devices without an update."""
         name = row.device.name.lower()
+        if row.outcome is not None:                      # just installed (or failed): on top
+            return -1, 0, name, row.order
         if row.update is not None:
             return 0, vf.RANK.get(row.level, 9), name, row.order
         if row.phase in (QUEUED, SCANNING, NOT_CHECKED):
@@ -201,11 +203,13 @@ class DriverTableModel(QAbstractTableModel):
         self._changed()
 
     def apply_outcomes(self, items: list[dict]) -> None:
+        """Results of an install: those rows show the outcome and move to the top."""
         by_id = {i.get("id"): i for i in items}
         for row in self.rows:
             if row.update is not None and row.key in by_id:
                 row.outcome = by_id[row.key]
                 row.selected = False
+        self._resort()
         self.refresh_all()
 
     # ----------------------------------------------------------- selection
@@ -270,8 +274,7 @@ class DriverTableModel(QAbstractTableModel):
         if role == RowRole:
             return r
         if role == MutedRole:
-            return ((u is None and r.phase == DONE)
-                    or (r.outcome is not None and r.outcome.get("status") == "no-op"))
+            return u is None and r.phase == DONE
         if role == SpinnerRole:
             return col == COL_STATUS and r.spinning
         if col == COL_DEVICE:

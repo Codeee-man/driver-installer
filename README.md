@@ -6,7 +6,7 @@ a dry-run default.
 
 ```
 pip install cryptography PySide6 pytest
-python -m pytest -q                                  # 414 tests, no admin rights or internet needed
+python -m pytest -q                                  # 423 tests, no admin rights or internet needed
 
 python src/cli.py scan                               # hardware vs. manifest (table, or --json)
 python src/cli.py check --notify                     # exit 0 up to date, 1 updates, 2+ error

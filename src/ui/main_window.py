@@ -532,12 +532,15 @@ class MainWindow(QMainWindow):
         if status in ("refused", "failed") and not items:
             text = result.get("detail") or "Nothing was installed."
         bad = bool(blocked or failed or status in ("refused", "failed"))
+        # Every outcome, in full, in LOG (the status line holds only the first problem; a driver
+        # that pnputil only staged, rc 259, shows as Installed and says so here). LOG opens by
+        # itself only when something went wrong.
+        self.log.appendPlainText("\n--- Install result: " + str(status) + (f" ({result['detail']})" if result.get("detail") else ""))
+        for i in items:
+            rc = f" (rc {i['rc']})" if i.get("rc") not in (None, 0) else ""
+            self.log.appendPlainText(f"  {str(i.get('status', '?')).upper():<15} {i.get('name') or i.get('id')}: "
+                                     f"{i.get('detail') or 'no reason given'}{rc}")
         if bad:
-            # Every reason, in full, in LOG (the status line holds only the first).
-            self.log.appendPlainText("\n--- Install result: " + str(status) + (f" ({result['detail']})" if result.get("detail") else ""))
-            for i in items:
-                self.log.appendPlainText(f"  {str(i.get('status', '?')).upper():<15} {i.get('name') or i.get('id')}: "
-                                         f"{i.get('detail') or 'no reason given'}")
             self.btn_log.setChecked(True)
         self.say(text, "error" if bad else "ok")
 

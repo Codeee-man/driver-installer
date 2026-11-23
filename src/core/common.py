@@ -125,7 +125,7 @@ class AuditLog:
 
     def write(self, event: str, **data) -> None:
         with self._lock:
-            rec = {"seq": self._seq, "ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds"),
+            rec = {"seq": self._seq, "ts": local_timestamp(),
                    "event": event, "data": data, "prev": self._prev}
             rec["hash"] = self._digest(rec)
             fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
@@ -151,6 +151,22 @@ class AuditLog:
 
 
 _audit: AuditLog | None = None
+
+
+def local_timestamp(now: dt.datetime | None = None) -> str:
+    """ISO 8601 in the computer's time zone, with its offset (2026-11-23T15:34:02.120+01:00):
+    what the user's clock says, and still unambiguous."""
+    return (now or dt.datetime.now()).astimezone().isoformat(timespec="milliseconds")
+
+
+def local_clock(ts: str) -> str:
+    """HH:MM:SS in the computer's time zone for any ISO timestamp (UTC "Z"/+00:00 from older
+    logs included); the raw text's time part if it cannot be parsed."""
+    try:
+        when = dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return (ts or "")[11:19]
+    return (when.astimezone() if when.tzinfo else when).strftime("%H:%M:%S")
 
 
 def init_audit(path: Path | None = None) -> AuditLog:
@@ -201,23 +217,52 @@ def run(cmd: list[str], timeout: int = 600, env: dict | None = None, log_args: b
     return Result(proc.returncode, decode_output(proc.stdout), decode_output(proc.stderr))
 
 
-def oem_codepage() -> str | None:
-    """The console (OEM) code page Windows tools write in when redirected, e.g. cp852 on Czech
-    Windows, cp437 on US English. None off Windows."""
+def _codepage(fn: str) -> str | None:
     if OS_NAME != "windows":
         return None
     try:
         import ctypes
-        return f"cp{ctypes.windll.kernel32.GetOEMCP()}"
+        return f"cp{getattr(ctypes.windll.kernel32, fn)()}"
     except (AttributeError, OSError):
         return None
 
 
-def decode_output(data: bytes | str | None, oem: str | None = None) -> str:
+def oem_codepage() -> str | None:
+    """Console (OEM) code page, e.g. cp852 on Czech Windows. None off Windows."""
+    return _codepage("GetOEMCP")
+
+
+def ansi_codepage() -> str | None:
+    """ANSI code page, e.g. cp1250 on Czech Windows; what pnputil.exe writes when redirected."""
+    return _codepage("GetACP")
+
+
+_PUNCT = set(" \t\r\n.,:;!?()[]{}'\"-_/\\%+=*#@<>&|~^$")
+
+
+def _plausibility(text: str) -> int:
+    """Higher for text that reads like words: non-ASCII letters count for it, non-ASCII symbols
+    (¨ × ┼) and an uppercase accented letter inside a lowercase word ("SystÚm") against it."""
+    score = 0
+    for i, ch in enumerate(text):
+        if ord(ch) < 128:
+            continue
+        if ch.isalpha():
+            score += 1
+            prev, nxt = text[i - 1:i], text[i + 1:i + 2]
+            if ch.isupper() and prev.islower() and nxt.islower():
+                score -= 3
+        else:
+            score -= 2
+    return score
+
+
+def decode_output(data: bytes | str | None, oem: str | None = None, ansi: str | None = None) -> str:
     """Tool output as text. UTF-8 when the bytes are valid UTF-8 (our PowerShell scripts, most
-    modern tools); otherwise the OEM code page, which console tools such as pnputil and
-    expand use for localized messages ("Systém nemůže nalézt uvedený soubor." on Czech
-    Windows, not "Syst?m nem??e"). Replacement characters only as a last resort."""
+    modern tools). Otherwise Windows tools write in one of two single-byte code pages: pnputil in
+    the ANSI one (cp1250 on Czech Windows), expand and other console tools in the OEM one
+    (cp852). Both decode any bytes, so both are tried and the result that reads like text wins
+    ("Systém nemůže nalézt uvedený soubor.", not "SystÚm nem¨×e"); on a tie, ANSI."""
     if data is None:
         return ""
     if isinstance(data, str):
@@ -226,13 +271,16 @@ def decode_output(data: bytes | str | None, oem: str | None = None) -> str:
         return data.decode("utf-8")
     except UnicodeDecodeError:
         pass
-    for codec in (oem or oem_codepage(), "cp1252"):
-        if codec:
-            try:
-                return data.decode(codec)
-            except (UnicodeDecodeError, LookupError):
-                continue
-    return data.decode("utf-8", errors="replace")
+    best = None
+    for codec in dict.fromkeys(c for c in (ansi or ansi_codepage(), oem or oem_codepage(), "cp1252") if c):
+        try:
+            text = data.decode(codec)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        score = _plausibility(text)
+        if best is None or score > best[0]:
+            best = (score, text)
+    return best[1] if best else data.decode("utf-8", errors="replace")
 
 
 def powershell(script: str, env: dict | None = None, timeout: int = 600) -> Result | None:

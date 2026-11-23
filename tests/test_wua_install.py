@@ -116,6 +116,80 @@ def test_localized_tool_output_uses_the_oem_code_page():
     assert "�" not in common.decode_output("Žluťoučký kůň".encode("cp852"), oem="cp852")
 
 
+@pytest.mark.parametrize("text", [
+    "Systém nemůže nalézt uvedený soubor.",
+    "Ovladač byl přidán do úložiště ovladačů.",
+    "Zařízení nevyžaduje aktualizaci ovladače.",
+    "Žluťoučký kůň úpěl ďábelské ódy.",
+])
+def test_pnputil_output_in_the_ansi_code_page_is_not_garbled(text):
+    """pnputil writes redirected output in the ANSI code page (cp1250 on Czech Windows) while
+    console tools use the OEM one (cp852). Either way the readable decoding wins."""
+    for written in ("cp1250", "cp852"):
+        assert common.decode_output(text.encode(written), oem="cp852", ansi="cp1250") == text
+    garbled = text.encode("cp1250").decode("cp852")
+    assert common.decode_output(text.encode("cp1250"), oem="cp852", ansi="cp1250") != garbled
+
+
+def test_run_decodes_pnputil_cp1250_output(monkeypatch):
+    import subprocess
+    czech = "Systém nemůže nalézt uvedený soubor."
+    monkeypatch.setattr(common, "oem_codepage", lambda: "cp852")
+    monkeypatch.setattr(common, "ansi_codepage", lambda: "cp1250")
+    monkeypatch.setattr(common, "resolve_binary", lambda name: "/bin/" + name)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        a[0], 2, czech.encode("cp1250"), b""))
+    out = common.run(["pnputil", "/add-driver", "x.inf"]).stdout
+    assert out == czech and "SystÚm" not in out and "nem¨×e" not in out
+
+
+def test_code_pages_come_from_windows_only(monkeypatch):
+    monkeypatch.setattr(common, "OS_NAME", "linux")
+    assert common.ansi_codepage() is None and common.oem_codepage() is None
+    import ctypes
+    kernel32 = type("K", (), {"GetACP": staticmethod(lambda: 1250), "GetOEMCP": staticmethod(lambda: 852)})
+    monkeypatch.setattr(ctypes, "windll", type("W", (), {"kernel32": kernel32}), raising=False)
+    monkeypatch.setattr(common, "OS_NAME", "windows")
+    assert (common.ansi_codepage(), common.oem_codepage()) == ("cp1250", "cp852")
+
+
+# ------------------------------------------------------ local-time log stamps
+@pytest.fixture
+def prague_time(monkeypatch):
+    import time
+    if not hasattr(time, "tzset"):
+        pytest.skip("needs time.tzset")
+    monkeypatch.setenv("TZ", "Europe/Prague")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def test_log_timestamps_are_local_time(prague_time, tmp_path):
+    import datetime as dt
+    from core import diagnostics
+    winter = dt.datetime(2026, 11, 23, 13, 34, 2, 120000, tzinfo=dt.timezone.utc)
+    assert common.local_timestamp(winter) == "2026-11-23T14:34:02.120+01:00"
+    summer = dt.datetime(2026, 7, 1, 13, 0, 0, tzinfo=dt.timezone.utc)
+    assert common.local_timestamp(summer).endswith("T15:00:00.000+02:00")
+    # the LOG drawer shows the computer's clock, also for UTC stamps from older helper logs
+    assert common.local_clock("2026-11-23T14:34:02.120+01:00") == "14:34:02"
+    assert common.local_clock("2026-11-23T13:34:02.120+00:00") == "14:34:02"
+    assert common.local_clock("2026-11-23T13:34:02Z") == "14:34:02"
+    assert common.local_clock("garbage") == ""
+    line = diagnostics.format_record({"ts": "2026-11-23T13:34:02.120+00:00", "event": "helper.step",
+                                      "data": {"phase": "install", "name": "Wifi"}})
+    assert line.startswith("14:34:02  ")
+    # what the audit log (and so the helper's .log) writes now
+    log = common.AuditLog(tmp_path / "audit.jsonl")
+    log.write("test.event", n=1)
+    stamp = json.loads((tmp_path / "audit.jsonl").read_text().splitlines()[-1])["ts"]
+    when = dt.datetime.fromisoformat(stamp)
+    assert when.utcoffset() == dt.datetime.now().astimezone().utcoffset()
+    assert abs((dt.datetime.now(dt.timezone.utc) - when).total_seconds()) < 60
+
+
 def test_run_decodes_with_the_oem_code_page(monkeypatch):
     import subprocess
     czech = "Systém nemůže nalézt uvedený soubor."

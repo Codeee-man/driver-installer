@@ -21,7 +21,7 @@ from ui import verification as vf  # noqa: E402
 from ui.delegates import BadgeDelegate  # noqa: E402
 from test_scanner_win import _pkg  # noqa: E402
 from ui.models import (COL_DEVICE, COL_SELECT, COL_STATUS, COL_VERIFY, BadgeRole, HelpRole,  # noqa: E402
-                       SubtitleRole)
+                       MutedRole, SubtitleRole)
 
 OK = "passed"
 FULL_CHECKS = [("sha256", OK, "bytes match the signed manifest"), ("manifest", OK, "pinned key"),
@@ -279,6 +279,31 @@ def test_confirmed_install_updates_each_row(window, monkeypatch):
     assert badge("full") == ("Restart required", "warn") and badge("full2") == ("Failed", "alert")
     assert win.status.text() == "> 1 installed, 1 failed. Restart to finish. Gpu: pnputil error 5" and win.status.property("kind") == "error"
     assert not win.model.rows[row_of(win, ups["full"])].selectable          # installed rows cannot be picked again
+
+
+def test_driver_staged_by_pnputil_259_shows_installed_and_is_not_dimmed(window, monkeypatch):
+    """pnputil 259 ("no-op"): the driver is in the driver store, which is what was asked for.
+    The row says INSTALLED in green like any install, is not greyed out like "Up to date"
+    devices, moves to the top, and keeps pnputil's explanation in its tooltip and the LOG."""
+    app, win, ups = window
+    staged = ("added to the Windows driver store (pnputil 259: no device switched to it now; "
+              "Windows uses it when a matching device needs it, e.g. after a restart)")
+    monkeypatch.setattr(engine, "apply", lambda todo, ctx, **kw: {"status": "ok", "items": [
+        {"id": "wifi", "name": "Wifi", "status": "no-op", "rc": 259, "detail": staged}]})
+    win.model.set_selected(row_of(win, ups["full"]), True)
+    answer(win, True)
+    win.do_install()
+    ui.settle(app, win)
+    row = row_of(win, ups["full"])
+    cell = win.model.index(row, COL_STATUS)
+    assert cell.data(BadgeRole) == ("Installed", "ok") == vf.OUTCOMES["installed"]
+    assert cell.data(Qt.DisplayRole) == "Installed" and cell.data(Qt.ToolTipRole) == staged
+    assert not win.model.index(row, COL_DEVICE).data(MutedRole)
+    assert row == 0 and not win.model.rows[row].selectable
+    assert win.status.text() == "> 1 installed." and win.status.property("kind") != "error"
+    assert "pnputil 259" in win.log.toPlainText()
+    # devices that never had an update are still the dimmed "Up to date" ones
+    assert win.model.index(len(win.model.rows) - 1, COL_DEVICE).data(MutedRole)
 
 
 def test_snapshot_failure_asks_again_before_continuing(window, monkeypatch):

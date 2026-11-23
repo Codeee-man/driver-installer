@@ -198,13 +198,17 @@ def test_setup_is_compiled_from_the_signed_folder_and_signed_by_inno_setup(tmp_p
     iscc.write_bytes(b"MZ")
     out = tmp_path / "dist"
     out.mkdir()
-    ran, verified = [], []
+    ran, signed = [], []
+    fake_setup = b"MZ" + b"\0" * 64 + b'<requestedExecutionLevel ' + bw.AS_INVOKER + b"/>" + b"\0" * 64
     monkeypatch.setattr(bw.platform, "system", lambda: "Windows")
     monkeypatch.setenv("ISCC", str(iscc))
     monkeypatch.setenv("WINDOWS_PFX_BASE64", pfx_b64)
     monkeypatch.setenv("WINDOWS_PFX_PASSWORD", "pw")
-    monkeypatch.setattr(bw, "run", lambda cmd, **kw: ran.append(cmd) or (out / bw.SETUP_NAME).write_bytes(b"MZ"))
-    monkeypatch.setattr(bw.codesign_windows, "verify_signed", lambda files: verified.extend(files))
+    monkeypatch.setattr(bw, "run", lambda cmd, **kw: ran.append(cmd) or (out / bw.SETUP_NAME).write_bytes(fake_setup))
+    monkeypatch.setattr(bw, "manifest_level", lambda exe: "requireAdministrator"
+                        if bw.REQUIRE_ADMIN in exe.read_bytes() else "asInvoker")
+    monkeypatch.setattr(bw.codesign_windows, "sign_executables",
+                        lambda files: signed.append((files, files[0].read_bytes())))
     target = bw.build_setup(tmp_path / "app", "1.2.3", out, tmp_path / "work", None, "auto")
     (cmd,) = ran
     assert cmd[0] == str(iscc) and cmd[-1] == str(bw.ISS)
@@ -212,7 +216,10 @@ def test_setup_is_compiled_from_the_signed_folder_and_signed_by_inno_setup(tmp_p
     assert "/DSign" in cmd
     sign_opt = next(c for c in cmd if c.startswith("/Sdisign="))
     assert "codesign_windows.py$q $f" in sign_opt                 # Inno calls our signer for Setup + uninstaller
-    assert verified == [target]                                    # and the result is read back
+    # the manifest is switched in place (same size), and only then is Setup signed (again)
+    assert target.read_bytes() == fake_setup.replace(bw.AS_INVOKER, bw.REQUIRE_ADMIN)
+    assert len(target.read_bytes()) == len(fake_setup)
+    assert signed == [([target], target.read_bytes())]
     shim = (tmp_path / "work" / "setup" / "driver-installer.cmd").read_bytes()
     assert b'"%~dp0DriverInstaller.exe" %*\r\n' in shim and b"exit /b %ERRORLEVEL%" in shim
 

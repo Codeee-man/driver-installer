@@ -238,6 +238,9 @@ jobs:
         run: |
           $setup = (Resolve-Path 'dist/DriverInstaller-Setup.exe').Path
           $dest = Join-Path $env:ProgramFiles 'Driver Installer'
+          $level = python -c "import sys; sys.path.insert(0, 'tools'); import build_windows as b; from pathlib import Path; print(b.manifest_level(Path(sys.argv[1])))" $setup
+          "Setup.exe requestedExecutionLevel: $level"
+          if ($level -ne 'requireAdministrator') { throw "Setup.exe manifest asks for $level, not requireAdministrator" }
           $envKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
           $link = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Driver Installer.lnk'
           function Install([string]$tasks) {
@@ -309,6 +312,18 @@ jobs:
           $rc = Invoke-AsUser 'di-gui' "set QT_QPA_PLATFORM=offscreen&& start `"`" /wait `"$dest\DriverInstaller.exe`" gui --demo --screenshot $shot"
           "standard user GUI: exit $rc"
           if ($rc -ne 0 -or -not (Test-Path $shot)) { throw 'a standard user could not start the GUI' }
+          # Setup.exe asks Windows for elevation in its manifest (requireAdministrator): the loader
+          # refuses to start it with a standard user's token (ERROR_ELEVATION_REQUIRED, 740), so
+          # Setup never runs without rights. Plain CreateProcess (Python's subprocess), because cmd
+          # and Explorer would fall back to the UAC prompt, which has no desktop here.
+          Copy-Item $setup C:\Users\Public\DriverInstaller-Setup.exe
+          $probe = 'import subprocess, sys' + "`n" + 'try: subprocess.run([r"C:\Users\Public\DriverInstaller-Setup.exe", "/VERYSILENT"], timeout=60); print("started")' + "`n" + 'except OSError as e: print("winerror", e.winerror)'
+          Set-Content C:\Users\Public\elevation-probe.py $probe
+          $py = (Get-Command python).Source
+          $rc = Invoke-AsUser 'di-setup' "`"$py`" C:\Users\Public\elevation-probe.py > C:\Users\Public\setup-user.txt 2>&1"
+          $said = Get-Content C:\Users\Public\setup-user.txt -Raw -ErrorAction SilentlyContinue
+          "standard user starting Setup: exit $rc, $said"
+          if ($said -notmatch 'winerror 740') { throw 'Windows did not demand elevation before Setup started' }
           $rc = Invoke-AsUser 'di-write' "echo x> `"$dest\written-by-user.txt`""
           if (Test-Path (Join-Path $dest 'written-by-user.txt')) { throw 'a standard user could write into the install folder' }
           "standard user writing into the install folder: refused (exit $rc)"

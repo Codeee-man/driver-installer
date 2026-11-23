@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 
+from . import common
+
 # Events shown by --debug (prefix match). Everything is still in the audit log.
 DEBUG_PREFIXES = ("scan.", "wmi.", "catalog.", "wua.", "discovery.", "drivers.", "fwupd.", "blocklist.",
                   "verify.", "signature.", "net.", "exec", "plan", "restore.", "install.", "helper.", "elevation.",
@@ -113,7 +115,7 @@ def format_record(rec: dict, with_time: bool = True) -> str:
         rec = {**rec, "ts": ts, "event": inner["event"]}
     else:
         head, *rest = describe(rec)
-    prefix = f"{rec.get('ts', '')[11:19]}  " if with_time else ""
+    prefix = f"{common.local_clock(str(rec.get('ts', '')))}  " if with_time else ""
     lines = [f"{prefix}{rec.get('event', ''):<22} {head}"]
     pad = " " * (len(prefix) + 23)
     lines += [pad + line for line in rest]

@@ -46,9 +46,10 @@ DefaultDirName={autopf}\Driver Installer
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 DisableReadyPage=no
-; Elevation: Setup.exe is Inno Setup's loader (manifest asInvoker). With PrivilegesRequired=admin it
-; restarts itself through the native UAC prompt before showing any page, then installs per machine.
-; No "install for me only" choice: the program must live in Program Files, so overrides are off.
+; Elevation: per machine, administrators only. Inno Setup's loader ships with an asInvoker
+; manifest and restarts itself elevated, which antivirus interception can break on first launch;
+; tools/build_windows.py switches the manifest to requireAdministrator, so Windows shows the UAC
+; prompt before Setup runs. No "install for me only" choice: overrides stay off.
 PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=
 ArchitecturesAllowed=x64compatible
@@ -77,10 +78,6 @@ SignedUninstaller=yes
 SignToolRetryCount=2
 #endif
 
-[Messages]
-; Shown only when Windows did not grant administrator rights (UAC declined or unavailable).
-AdminPrivilegesRequired=Driver Installer is installed for all users in Program Files, which needs administrator rights.%n%nWindows did not grant them: the UAC prompt was declined, or this account may not elevate. Start DriverInstaller-Setup.exe again and choose Yes in the Windows prompt (or right-click it and choose Run as administrator).%n%nTo use Driver Installer without installing, unzip DriverInstaller-Windows-Portable.zip instead.
-
 [Tasks]
 Name: "addtopath"; Description: "Add CLI command (driver-installer) to system PATH"; GroupDescription: "Command line:"; Flags: unchecked
 
@@ -102,8 +99,11 @@ Name: "{autoprograms}\Driver Installer"; Filename: "{app}\DriverInstaller.exe"; 
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Tasks: addtopath; Check: NeedsAddPath(ExpandConstant('{app}'))
 
 [Run]
-; runasoriginaluser: the program must start with the user's rights, not the installer's.
-Filename: "{app}\DriverInstaller.exe"; Description: "Start Driver Installer"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; The program must start with the user's rights, not the installer's.
+; Setup itself runs elevated from the start (its manifest is switched to requireAdministrator by
+; tools/build_windows.py), so there is no non-elevated "original user" to run as. Explorer starts
+; the program with the desktop's normal, non-elevated rights instead.
+Filename: "{win}\explorer.exe"; Parameters: """{app}\DriverInstaller.exe"""; Description: "Start Driver Installer"; Flags: nowait postinstall skipifsilent
 
 [Code]
 const
