@@ -304,7 +304,8 @@ def execute(pkg: dict, cmd: list[str]) -> InstallResult:
             result = InstallResult(pid, "reboot-required", res.rc, "driver installed; restart to finish", [cmd])
         elif cmd[0] == "pnputil" and res.rc == ERROR_NO_MORE_ITEMS:
             result = InstallResult(pid, "no-op", res.rc,
-                                   "driver added to the store; no device needed it (already up to date)", [cmd])
+                                   "added to the Windows driver store (pnputil 259: no device switched to it now; "
+                                   "Windows uses it when a matching device needs it, e.g. after a restart)", [cmd])
         elif cmd[0] == "fwupdmgr" and res.rc == 2:
             result = InstallResult(pid, "no-op", 2, "fwupd reports nothing to do", [cmd])
         else:

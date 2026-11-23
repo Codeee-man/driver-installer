@@ -32,6 +32,7 @@ import argparse
 import datetime as dt
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -210,10 +211,60 @@ def build_setup(app_dir: Path, version: str, out: Path, work: Path, icon: Path |
     run(iscc_command(iscc, version, app_dir, shim, out, icon, cert is not None))
     if not target.is_file():
         raise BuildError(f"iscc finished but {target} is missing")
+    require_administrator(target)                     # changes bytes: any signature from iscc is now stale
     if cert is not None:
-        codesign_windows.verify_signed([target])        # signed while compiling; read it back
+        codesign_windows.sign_executables([target])   # signs the patched file (replacing iscc's signature)
     print(f"built {target} ({target.stat().st_size // (1 << 20)} MiB, sha256 {sha256_file(target)})")
     return target
+
+
+# Inno Setup's loader always ships with requestedExecutionLevel "asInvoker" and restarts itself
+# elevated after it has started. On first launch, antivirus interception (e.g. AVG CyberCapture)
+# or the download mark can break that restart, and Setup then reports that the UAC prompt was
+# declined although none appeared. No .iss directive changes this, but Inno pads the attribute
+# with spaces so it can be switched in place: the file keeps its size and layout, and Windows
+# shows the UAC prompt itself, before Setup runs at all.
+AS_INVOKER = b'level="asInvoker"            uiAccess="false"'
+REQUIRE_ADMIN = b'level="requireAdministrator" uiAccess="false"'
+assert len(AS_INVOKER) == len(REQUIRE_ADMIN)
+
+
+def require_administrator(setup: Path) -> None:
+    """Switch DriverInstaller-Setup.exe's manifest to requireAdministrator, in place, before it
+    is signed. Raises BuildError unless exactly one manifest entry was found and switched."""
+    data = setup.read_bytes()
+    found = data.count(AS_INVOKER)
+    if found != 1 and data.count(REQUIRE_ADMIN) == 1:
+        return                                          # already done
+    if found != 1:
+        raise BuildError(f"{setup.name}: expected one asInvoker manifest entry to switch, found {found}; "
+                         "has Inno Setup changed its manifest?")
+    patched = data.replace(AS_INVOKER, REQUIRE_ADMIN)
+    assert len(patched) == len(data)
+    setup.write_bytes(patched)
+    level = manifest_level(setup)                       # None: pefile missing, the byte check stands
+    if level not in (None, "requireAdministrator"):
+        raise BuildError(f"{setup.name}: manifest asks for {level!r} after patching")
+    print(f"{setup.name}: manifest now requests requireAdministrator (UAC before Setup starts)")
+
+
+def manifest_level(exe: Path) -> str | None:
+    """requestedExecutionLevel from the PE manifest resource (needs pefile; None without it)."""
+    try:
+        import pefile
+    except ImportError:
+        return None
+    pe = pefile.PE(str(exe), fast_load=True)
+    pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"]])
+    for entry in pe.DIRECTORY_ENTRY_RESOURCE.entries if hasattr(pe, "DIRECTORY_ENTRY_RESOURCE") else []:
+        if entry.id == pefile.RESOURCE_TYPE["RT_MANIFEST"]:
+            for sub in entry.directory.entries:
+                for lang in sub.directory.entries:
+                    text = pe.get_data(lang.data.struct.OffsetToData, lang.data.struct.Size).decode("utf-8", "replace")
+                    m = re.search(r'requestedExecutionLevel\s+level="([^"]+)"', text)
+                    if m:
+                        return m.group(1)
+    return None
 
 
 def write_zip(app_dir: Path, target: Path) -> Path:

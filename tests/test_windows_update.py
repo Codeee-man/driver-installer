@@ -316,7 +316,10 @@ def test_setup_script_locks_down_the_folder_and_offers_the_path_task():
     assert 'Description: "Add CLI command (driver-installer) to system PATH"' in iss and "Flags: unchecked" in iss
     assert '{olddata};{app}' in iss and "RemoveFromPath" in iss and "usPostUninstall" in iss
     assert r'Name: "{autoprograms}\Driver Installer"; Filename: "{app}\DriverInstaller.exe"' in iss
-    assert "runasoriginaluser" in iss                       # "Start" after setup is not elevated
+    # "Start" after setup is not elevated: elevated Setup has no original user to run as, so
+    # Explorer (the desktop's normal rights) starts the program
+    assert "runasoriginaluser" not in iss
+    assert 'Filename: "{win}\\explorer.exe"; Parameters: """{app}\\DriverInstaller.exe"""' in iss
     assert "SignTool=disign" in iss and "SignedUninstaller=yes" in iss
 
 
@@ -370,16 +373,49 @@ def test_setup_elevates_through_uac_and_the_program_does_not():
     override, no PowerShell needed after copying. DriverInstaller.exe: asInvoker, so scanning
     needs no prompt; it elevates only itself, only to install."""
     iss = (ROOT / "packaging" / "windows" / "DriverInstaller.iss").read_text()
-    setup = iss[iss.index("[Setup]"):iss.index("[Messages]")]
+    setup = iss[iss.index("[Setup]"):iss.index("[Tasks]")]
     directives = dict(line.split("=", 1) for line in setup.splitlines() if "=" in line and not line.startswith((";", "#")))
     assert directives["PrivilegesRequired"] == "admin"
     assert directives["PrivilegesRequiredOverridesAllowed"] == ""          # no "install for me only" mode
     assert directives["CloseApplications"] == "force"                       # a running copy cannot block the ACL reset
     assert "powershell" not in iss.lower()                                   # nothing after copying can be policy-blocked
-    message = next(line for line in iss.splitlines() if line.startswith("AdminPrivilegesRequired="))
-    assert "UAC prompt was declined" in message and "Portable.zip" in message
+    # no custom "UAC prompt was declined" text and no [Code] admin check: Windows itself elevates
+    # Setup (requireAdministrator, switched in by build_windows), so Setup never starts without it
+    assert "AdminPrivilegesRequired" not in iss and "[Messages]" not in iss
+    assert "IsAdmin" not in iss[iss.index("[Code]"):]
     spec = (ROOT / "packaging" / "windows" / "driver-installer.spec").read_text()
     assert "uac_admin=False" in spec                                          # -> requestedExecutionLevel asInvoker
     sys.path.insert(0, str(ROOT / "tools"))
     import build_windows
     assert "asInvoker" in build_windows.check_pe_metadata.__doc__
+
+
+def test_setup_manifest_is_switched_to_require_administrator_in_place(tmp_path):
+    """Inno Setup ships its loader as asInvoker; the build switches the padded attribute to
+    requireAdministrator without changing the file's size, and refuses anything unexpected."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    import build_windows as bw
+    from build_common import BuildError
+    assert len(bw.AS_INVOKER) == len(bw.REQUIRE_ADMIN)
+    manifest = (b'<trustInfo><security><requestedPrivileges><requestedExecutionLevel '
+                + bw.AS_INVOKER + b'/></requestedPrivileges></security></trustInfo>')
+    exe = tmp_path / "DriverInstaller-Setup.exe"
+    original = b"MZ" + b"\0" * 100 + manifest + b"\0" * 100 + b"overlay: setup data"
+    exe.write_bytes(original)
+    levels = iter(["requireAdministrator"])
+    bw_level, bw.manifest_level = bw.manifest_level, lambda p: next(levels)
+    try:
+        bw.require_administrator(exe)
+        data = exe.read_bytes()
+        assert len(data) == len(original) and data.endswith(b"overlay: setup data")
+        assert b'level="requireAdministrator" uiAccess="false"' in data and b"asInvoker" not in data
+        bw.require_administrator(exe)                                     # a second run changes nothing
+        assert exe.read_bytes() == data
+        exe.write_bytes(b"MZ no manifest")
+        with pytest.raises(BuildError, match="asInvoker"):
+            bw.require_administrator(exe)
+        exe.write_bytes(original + manifest)                             # two candidates: refuse to guess
+        with pytest.raises(BuildError, match="found 2"):
+            bw.require_administrator(exe)
+    finally:
+        bw.manifest_level = bw_level

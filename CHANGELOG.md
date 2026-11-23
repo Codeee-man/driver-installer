@@ -7,6 +7,30 @@ each tag's GitHub Release shows its section from this file above the downloads
 ## [Unreleased]
 
 ### Fixed
+- **No more false "administrator rights … UAC prompt was declined" message when Setup is first
+  started.** Inno Setup's loader starts without rights (`asInvoker`) and restarts itself
+  elevated; on a first launch, antivirus interception of the freshly downloaded file could break
+  that restart, and Setup reported a declined prompt that never appeared. The build now switches
+  `DriverInstaller-Setup.exe`'s manifest to `requireAdministrator` (in place, before signing), so
+  Windows shows the UAC prompt itself before Setup runs. No `.iss` directive can do this:
+  `PrivilegesRequired=admin` was already set. The custom message is gone, and "Start Driver
+  Installer" on the last page now goes through Explorer so the program still runs without admin
+  rights. `DriverInstaller.exe` is unchanged (`asInvoker`).
+- **Log times are local.** The LOG drawer, the audit log and the installer's `.log` files use the
+  computer's time zone (with its offset, e.g. `+01:00`), not UTC; older UTC entries are shown in
+  local time too.
+- **Drivers that `pnputil` added to the driver store (exit code 259) show as INSTALLED** in green,
+  not as a dimmed "Up to date" row, and move to the top with the other results. The reason
+  ("pnputil 259: no device switched to it now …") is in the row's tooltip and in LOG, which now
+  lists every install result, not only failures.
+- **Localized `pnputil` messages are readable.** Output is decoded as UTF-8, else in the Windows
+  ANSI code page (`GetACP`, cp1250 on Czech Windows, which `pnputil` uses) or the OEM one
+  (`GetOEMCP`, cp852), whichever reads as text: "Systém nemůže nalézt uvedený soubor." instead of
+  "SystÚm nem¨×e …".
+
+## [1.1.5] - 2026-11-23
+
+### Fixed
 - **Scans no longer stall on Windows Update drivers.** Without admin rights, Windows refuses to
   copy a downloaded update out of its cache (`E_ACCESSDENIED`), after a 20-40 s download per
   driver. The scan no longer tries: drivers that Windows Update offers this PC and that the public

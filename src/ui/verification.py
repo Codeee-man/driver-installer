@@ -58,7 +58,7 @@ def missing_summary(update) -> str:
 OUTCOMES = {
     "installed": ("Installed", "ok"),
     "reboot-required": ("Restart required", "warn"),
-    "no-op": ("Up to date", "uptodate"),
+    "no-op": ("Installed", "ok"),        # pnputil 259: added to the driver store (detail in the tooltip)
     "failed": ("Failed", "alert"),
     "refused": ("Blocked", "alert"),
 }
