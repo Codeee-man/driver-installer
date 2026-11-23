@@ -106,9 +106,9 @@ def test_http_fetch_raises_redirect_error_only_when_asked(catalog):
 
 # ------------------------------------------------ Windows Update Agent fallback
 @pytest.mark.parametrize("payload", [WUA_CAB, WUA_CAB_NAMED, WUA_EXTRACTED], ids=["cache-name", "named-cab", "extracted"])
-def test_wua_payload_of_any_shape_verifies_full(box, as_user, payload):
-    """The cache hands over a cabinet without .cab, a named .cab, or loose .inf/.cat/.sys files:
-    each becomes one driver folder that is checked (LOLDrivers, catalog signer) -> Full."""
+def test_wua_payload_of_any_shape_verifies_full(box, as_admin, payload):
+    """Run as administrator, the scan itself can ask the agent: a cabinet without .cab, a named
+    .cab, or loose .inf/.cat/.sys files each become one driver tree, checked -> Full."""
     catalog, runner = box
     use_wua(runner, wua_fetch_result(payload=payload))
     update, ctx = hp_update(), engine.Context()
@@ -126,7 +126,7 @@ def test_wua_payload_of_any_shape_verifies_full(box, as_user, payload):
     assert cats and all(c.endswith(".cat") for c in cats)
 
 
-def test_non_driver_payload_is_none_with_the_files_named(box, as_user):
+def test_non_driver_payload_is_none_with_the_files_named(box, as_admin):
     _, runner = box
     use_wua(runner, wua_fetch_result(payload=WUA_INSTALLER))
     update, ctx = hp_update(), engine.Context()
@@ -137,20 +137,34 @@ def test_non_driver_payload_is_none_with_the_files_named(box, as_user):
     assert list(ctx.quarantine.iterdir()) == []
 
 
-def test_admin_only_download_is_partial_with_both_reasons(box, as_user):
+def test_unprivileged_scan_does_not_ask_the_agent_and_defers_the_checks_to_the_installer(box, as_user):
+    """Without admin rights CopyFromCache always ends in E_ACCESSDENIED after a 20-40 s download:
+    the scan does not try. The checks are "checked by the installer" (AT_INSTALL), which counts
+    as Full because the elevated installer refuses the update unless all of them pass."""
     _, runner = box
-    use_wua(runner, DENIED)
+    use_wua(runner, wua_fetch_result(error="must not be asked"))
     update, ctx = hp_update(), engine.Context()
     engine.verify_update(update, ctx)
     from ui import verification as vf
-    assert update.status == "verified" and vf.level(update) == "Partial"
-    assert states(update) == {"sha256": "skipped", "manifest": "not_applicable", "blocklist": "skipped",
-                              "publisher": "skipped"}
-    reason = update.check("sha256").reason
-    assert "302 ErrorInline.aspx" in reason and "WU_E_PER_MACHINE_UPDATE_ACCESS_DENIED" in reason
-    assert "before installing" in update.check("blocklist").reason
+    assert not [e for _, _, e in runner.calls if "SD_UPDATE_ID" in e]                  # no agent call at all
+    assert update.status == "verified" and vf.level(update) == "Full"
+    assert states(update) == {"sha256": "at_install", "manifest": "not_applicable", "blocklist": "at_install",
+                              "publisher": "at_install"}
+    assert "302 ErrorInline.aspx" in update.check("sha256").reason
+    assert "before pnputil runs" in update.check("blocklist").reason
     assert update.package["artifact"]["acquire"] == "windows-update-agent" and update.path == ""
-    assert "not reached" not in vf.explain(update)
+    text = vf.explain(update)
+    assert "» LOLDrivers BYOVD check: checked by the installer before installing" in text
+    assert vf.missing(update) == []
+
+
+def test_admin_denied_by_the_agent_is_also_deferred_with_its_reason(box, as_admin):
+    _, runner = box
+    use_wua(runner, DENIED)
+    update = hp_update()
+    engine.verify_update(update, engine.Context())
+    assert states(update)["sha256"] == "at_install"
+    assert "WU_E_PER_MACHINE_UPDATE_ACCESS_DENIED" in update.check("sha256").reason
 
 
 def test_helper_downloads_a_channel_trusted_update_and_checks_it_before_installing(box, as_user, monkeypatch):
@@ -168,18 +182,47 @@ def test_helper_downloads_a_channel_trusted_update_and_checks_it_before_installi
     assert cats and all(c.endswith("hpcustomcap.cat") for c in cats)         # WHQL signer checked in the helper
 
 
-def test_helper_refuses_a_bad_package_fetched_through_wua(box, as_user, monkeypatch):
+@pytest.mark.parametrize("signer, ok", [
+    (authenticode_json(subject="CN=HP Inc., O=HP Inc., L=Palo Alto, S=California, C=US"), True),     # OEM signer
+    (authenticode_json(subject='CN="WDKTestCert cloudtest,133775"', status="UnknownError"), True),   # Insider flight
+    (authenticode_json(subject="CN=HP Inc.", status="HashMismatch"), False),                          # tampered
+    (authenticode_json(subject="", status="NotSigned"), False),                                       # unsigned
+], ids=["oem", "flight-signed", "hash-mismatch", "unsigned"])
+def test_helper_signer_policy_for_packages_it_received_from_windows_update(box, as_user, monkeypatch, signer, ok):
     _, runner = box
-    use_wua(runner, DENIED)
-    update, ctx = hp_update(), engine.Context()
-    engine.verify_update(update, ctx)
+    ups, ctx = deferred(box)
     from core import elevation
     monkeypatch.setattr(elevation, "is_admin", lambda: True)
-    runner.on("powershell", windows_powershell(signer=authenticode_json(subject="CN=Not Microsoft"),
-                                               wua_fetch=wua_fetch_result()))
-    result = engine.apply([update], ctx)
-    assert result["status"] == "refused" and "not the pinned publisher" in result["items"][0]["detail"]
-    assert not runner.ran("pnputil")
+    runner.on("powershell", windows_powershell(signer=signer, wua_fetch=wua_fetch_result()))
+    seen = []
+    common.audit_log().listeners.append(seen.append)
+    try:
+        result = engine.apply(ups, ctx)
+    finally:
+        common.audit_log().listeners.remove(seen.append)
+    if ok:
+        assert result["status"] == "ok" and runner.ran("pnputil")
+        if "UnknownError" in signer:
+            (warn,) = [r for r in seen if r["event"] == "signature.wua_untrusted_root"]
+            assert "WDKTestCert" in warn["data"]["signer"] and "Windows enforces driver signing" in warn["data"]["note"]
+    else:
+        assert result["status"] == "refused" and not runner.ran("pnputil")
+        assert "Authenticode check failed for hpcustomcap.cat: status" in result["items"][0]["detail"]
+
+
+def test_loldrivers_still_stops_a_windows_update_package(box, as_user, monkeypatch):
+    from core.security import loldrivers
+    _, runner = box
+    ups, ctx = deferred(box)
+    from core import elevation
+    monkeypatch.setattr(elevation, "is_admin", lambda: True)
+    use_wua(runner, wua_fetch_result(payload=WUA_EXTRACTED))
+    bad = __import__("hashlib").sha256(WUA_EXTRACTED["hpappdrv/x64/HpAppDrv.sys"]).hexdigest()
+    blocklist = loldrivers.Blocklist()
+    blocklist.add("SHA256", bad, loldrivers.BlockEntry("lol-1", "vulnerable driver", "HpAppDrv.sys"))
+    monkeypatch.setattr(loldrivers, "fetch", lambda *a, **k: blocklist)
+    result = engine.apply(ups, ctx)
+    assert result["status"] == "security_alert" and not runner.ran("pnputil")
 
 
 def test_channel_trust_is_only_for_windows_update_items(box, as_admin):
@@ -190,7 +233,7 @@ def test_channel_trust_is_only_for_windows_update_items(box, as_admin):
         engine._policy_catalog_package(update.package)
 
 
-def test_failure_names_the_real_reasons_everywhere(box, as_user, tmp_path):
+def test_failure_names_the_real_reasons_everywhere(box, as_admin, tmp_path):
     _, runner = box
     use_wua(runner, wua_fetch_result(error="Windows Update no longer offers this update to this PC",
                                      hresult="0x80131500", stage="search"))
@@ -242,7 +285,7 @@ def test_fetch_payload_returns_only_real_files_inside_its_folder(runner, windows
 
 
 # ------------------------------------------------------------- popover
-def test_popover_opens_on_none_and_leads_with_the_failure(box, as_user, tmp_path):
+def test_popover_opens_on_none_and_leads_with_the_failure(box, as_admin, tmp_path):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QLabel
@@ -271,9 +314,9 @@ MS_WINDOWS = authenticode_json(subject="CN=Microsoft Windows, O=Microsoft Corpor
 
 
 def deferred(box, n=1):
-    """Partial Windows Update items, as after a scan where CopyFromCache was denied (0x80070005)."""
+    """Windows Update items as an unprivileged scan leaves them: nothing downloaded, checks at install."""
     catalog, runner = box
-    use_wua(runner, wua_fetch_result(error="Exception from HRESULT: 0x80070005", hresult="0x80070005", stage="copy"))
+    use_wua(runner, wua_fetch_result(error="the scan must not ask the agent"))
     ups, ctx = [], engine.Context()
     for i in range(n):
         u = hp_update()
@@ -283,7 +326,7 @@ def deferred(box, n=1):
             u.package.update(update_id=uid, id=f"windowsupdate.{uid}")
         engine.verify_update(u, ctx)
         from ui import verification as vf
-        assert vf.level(u) == "Partial" and "E_ACCESSDENIED" in u.check("sha256").reason
+        assert vf.level(u) == "Full" and u.check("blocklist").state == "at_install"
         ups.append(u)
     return ups, ctx
 
@@ -329,7 +372,7 @@ def test_refusals_as_administrator_reach_the_log_and_every_row_has_a_reason(box,
     _, runner = box
     ups, ctx = deferred(box, n=3)
     from core import elevation
-    runner.on("powershell", windows_powershell(signer=authenticode_json(subject="CN=Not Microsoft"),
+    runner.on("powershell", windows_powershell(signer=authenticode_json(subject="CN=HP Inc.", status="HashMismatch"),
                                                wua_fetch=wua_fetch_result()))
 
     def uac(argv, timeout=None):

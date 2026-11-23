@@ -69,8 +69,26 @@ def describe(rec: dict) -> list[str]:
         return [f"{data.get('update')} ({data.get('source')}): verification FAILED"
                 + (f" at {step}" if step else ""), f"  {data.get('reason')}"]
     if event == "verify.channel_trust":
-        return [f"{data.get('update')}: Partial, trusted through the Windows Update channel until the installer "
-                f"downloads it", f"  catalog: {data.get('catalog')}", f"  Windows Update Agent: {data.get('wua')}"]
+        return [f"{data.get('update')}: offered by Windows Update; the installer downloads it and runs the LOLDrivers "
+                f"and signature checks before installing", f"  catalog: {data.get('catalog')}",
+                f"  Windows Update Agent: {data.get('wua')}"]
+    if event == "helper.step":
+        phase = data.get("phase")
+        return ["creating a restore point" if phase == "restore" else
+                f"{phase} {data.get('index')}/{data.get('total')}: {data.get('name')}"]
+    if event == "signature.wua_untrusted_root":
+        return [f"WARNING {data.get('file')}: signed by {data.get('signer')} with an untrusted root ({data.get('status')}); "
+                f"delivered by Windows Update, so Windows' own driver signing check decides when pnputil installs it"]
+    if event == "signature.wua_ok":
+        return [f"{data.get('file')}: valid signature, {data.get('signer')}"]
+    if event == "helper.wua_install_fallback":
+        return [f"pnputil could not find a file for {data.get('name')}; installing it with Windows Update instead",
+                f"  pnputil: {data.get('pnputil')}"]
+    if event in ("wua.install.done", "wua.install.failed"):
+        return [f"Windows Update installer for {data.get('update')}: "
+                + (str(data.get("status")) if event.endswith("done") else f"failed ({data.get('hresult')}): {data.get('error')}")]
+    if event == "install.cab_fallback":
+        return [f"tar.exe could not unpack {data.get('cab')} ({data.get('reason')}); used expand.exe"]
     if event == "catalog.redirect":
         return [f"download dialog for {data.get('update')} answered {data.get('code')} -> {data.get('location')}"]
     if event == "catalog.download_unavailable":

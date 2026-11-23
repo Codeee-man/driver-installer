@@ -9,7 +9,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QVBoxLayout
 
-from core.model import FAILED, NOT_APPLICABLE, PASSED, SKIPPED
+from core.model import AT_INSTALL, FAILED, NOT_APPLICABLE, PASSED, SKIPPED
 from . import theme
 from . import verification as vf
 
@@ -17,7 +17,8 @@ WIDTH = 440
 
 
 def _state_color(state: str) -> str:
-    return {PASSED: theme.GREEN, FAILED: theme.RED, SKIPPED: theme.AMBER, NOT_APPLICABLE: theme.MUTED_DIM}[state]
+    return {PASSED: theme.GREEN, FAILED: theme.RED, SKIPPED: theme.AMBER, NOT_APPLICABLE: theme.MUTED_DIM,
+            AT_INSTALL: theme.ACCENT}[state]
 
 
 def _level_color(level: str) -> str:

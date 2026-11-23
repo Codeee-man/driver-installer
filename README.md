@@ -6,7 +6,7 @@ a dry-run default.
 
 ```
 pip install cryptography PySide6 pytest
-python -m pytest -q                                  # 396 tests, no admin rights or internet needed
+python -m pytest -q                                  # 414 tests, no admin rights or internet needed
 
 python src/cli.py scan                               # hardware vs. manifest (table, or --json)
 python src/cli.py check --notify                     # exit 0 up to date, 1 updates, 2+ error
@@ -47,10 +47,12 @@ Before real use:
 3. Optional weekly check: `systemctl --user enable --now driver-installer.timer`.
 
 Windows Update drivers that the public catalog cannot serve (its download dialog answers
-`302 -> ErrorInline.aspx`, common for OEM drivers) are fetched through the Windows Update Agent.
-If Windows lets only administrators download them, they show **Partial** with the reason, and the
-installer downloads them as administrator and runs every check before installing. Every failed
-check shows its real reason in the `(?)` next to the badge and in LOG.
+`302 -> ErrorInline.aspx`, common for OEM drivers) are not downloaded during the scan: Windows lets
+only administrators copy them out of its cache. Their checks show as "checked by the installer"
+(`»` in the `(?)`), and the installer, as administrator, has the Windows Update Agent download them,
+runs LOLDrivers on every `.sys` and requires a valid signature on every catalog before `pnputil`
+runs, refusing the update otherwise. While it works, the status line and LOG follow it live
+(`[admin]` lines). Every failed check shows its real reason in the `(?)` next to the badge and in LOG.
 
 Layout:
 

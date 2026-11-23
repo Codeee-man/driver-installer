@@ -191,14 +191,48 @@ def run(cmd: list[str], timeout: int = 600, env: dict | None = None, log_args: b
         full_env["PATH"] = TRUSTED_PATH
     flags = 0x08000000 if OS_NAME == "windows" else 0  # CREATE_NO_WINDOW
     try:
-        proc = subprocess.run([exe, *cmd[1:]], capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=timeout, env=full_env, creationflags=flags)
+        proc = subprocess.run([exe, *cmd[1:]], capture_output=True, timeout=timeout, env=full_env,
+                              creationflags=flags)
     except (OSError, subprocess.TimeoutExpired) as exc:
         audit("exec.error", program=cmd[0], error=str(exc))
         return None
     audit("exec", program=cmd[0], args=[a[:160] for a in cmd[1:]] if log_args else "<fixed script>",
           rc=proc.returncode)
-    return Result(proc.returncode, proc.stdout, proc.stderr)
+    return Result(proc.returncode, decode_output(proc.stdout), decode_output(proc.stderr))
+
+
+def oem_codepage() -> str | None:
+    """The console (OEM) code page Windows tools write in when redirected, e.g. cp852 on Czech
+    Windows, cp437 on US English. None off Windows."""
+    if OS_NAME != "windows":
+        return None
+    try:
+        import ctypes
+        return f"cp{ctypes.windll.kernel32.GetOEMCP()}"
+    except (AttributeError, OSError):
+        return None
+
+
+def decode_output(data: bytes | str | None, oem: str | None = None) -> str:
+    """Tool output as text. UTF-8 when the bytes are valid UTF-8 (our PowerShell scripts, most
+    modern tools); otherwise the OEM code page, which console tools such as pnputil and
+    expand use for localized messages ("Systém nemůže nalézt uvedený soubor." on Czech
+    Windows, not "Syst?m nem??e"). Replacement characters only as a last resort."""
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    for codec in (oem or oem_codepage(), "cp1252"):
+        if codec:
+            try:
+                return data.decode(codec)
+            except (UnicodeDecodeError, LookupError):
+                continue
+    return data.decode("utf-8", errors="replace")
 
 
 def powershell(script: str, env: dict | None = None, timeout: int = 600) -> Result | None:

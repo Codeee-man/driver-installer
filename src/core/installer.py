@@ -133,36 +133,89 @@ def is_cabinet(path: Path) -> bool:
 
 
 def build_package_dir(files: list[Path], root: Path, out: Path) -> Path:
-    """Turn what the Windows Update Agent handed over into one driver package folder in `out`.
-    Cabinets are recognised by their MSCF header, not their name (the WUA cache often drops the
-    .cab extension) and expanded, each into its own sub-folder; a cabinet inside one is expanded
-    once more. Other files (an already-extracted .inf/.cat/.sys set) are copied as they are.
-    Raises InstallError naming the files when the result holds no .inf."""
+    """Turn what the Windows Update Agent handed over into one driver package tree in `out`,
+    laid out the way the update itself is: every file keeps its path below `root`, and each
+    cabinet (recognised by its MSCF header, not its name: the WUA cache often drops .cab) is
+    unpacked in the folder it sits in, keeping the folders inside it. All parts share one tree,
+    so an .inf's relative SourceDisksFiles paths still resolve when pnputil uses /subdirs. A
+    cabinet that only wraps another one is unpacked once more. Two parts that put different
+    content at the same path are refused. Raises InstallError naming the files when the result
+    holds no .inf."""
     out.mkdir(parents=True, exist_ok=False)
-    for n, f in enumerate(files):
+    cabs = []
+    for f in files:
+        rel = f.relative_to(root)
         if is_cabinet(f):
-            target = out / f"cab{n:02d}"
-            target.mkdir()
-            unpack_package(f, "cab", target)
-            for inner in sorted(target.rglob("*")):           # e.g. a firmware .cab inside the update .cab
-                if inner.is_file() and is_cabinet(inner) and not list(target.rglob("*.inf")):
-                    nested = target / (inner.stem + "-expanded")
-                    nested.mkdir()
-                    unpack_package(inner, "cab", nested)
+            cabs.append((f, out / rel.parent))
         else:
-            target = out / f.relative_to(root)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(f, target)
+            _place(f, out / rel)
+    for n, (cab, folder) in enumerate(cabs):
+        _merge_cab(cab, folder, out, f"cab{n:02d}")
+    if not list(out.rglob("*.inf")):
+        for n, inner in enumerate(f for f in sorted(out.rglob("*")) if f.is_file() and is_cabinet(f)):
+            _merge_cab(inner, inner.parent, out, f"inner{n:02d}")       # e.g. a firmware .cab inside the update .cab
     if not list(out.rglob("*.inf")):
         got = ", ".join(f"{f.name} ({f.stat().st_size} bytes{', cabinet' if is_cabinet(f) else ''})" for f in files[:8])
         raise InstallError(f"Windows Update handed over no driver package (.inf) for this update: {got}. "
                            "It is not an INF driver, so this tool cannot install it; use Windows Update for it")
+    common.audit("install.package_tree", root=str(out), files=sum(1 for f in out.rglob("*") if f.is_file()),
+                 infs=[str(i.relative_to(out)) for i in out.rglob("*.inf")][:10])
     return out
+
+
+def _place(src: Path, target: Path) -> None:
+    if target.exists():
+        if verifier.sha256_file(target) != verifier.sha256_file(src):
+            raise InstallError(f"two parts of the update contain different files at {target.name}")
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, target)
+
+
+def _merge_cab(cab: Path, folder: Path, out: Path, tag: str) -> None:
+    scratch = out.parent / f".{out.name}-{tag}"
+    scratch.mkdir()
+    try:
+        unpack_package(cab, "cab", scratch)
+        for f in sorted(scratch.rglob("*")):
+            if f.is_file():
+                _place(f, folder / f.relative_to(scratch))
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _check_tree(dest: Path) -> None:
+    """After unpacking: nothing outside `dest`, no links, no more than MAX_EXTRACT_BYTES."""
+    root, total = dest.resolve(), 0
+    for f in dest.rglob("*"):
+        if f.is_symlink() or (f.exists() and root not in f.resolve().parents and f.resolve() != root):
+            raise InstallError(f"the cabinet contains an unsafe entry: {f.name}")
+        if f.is_file():
+            total += f.stat().st_size
+    if total > MAX_EXTRACT_BYTES:
+        raise InstallError("the cabinet unpacks to more than the size limit")
+
+
+def _unpack_cab(path: Path, dest: Path) -> None:
+    """Windows' tar.exe (libarchive) keeps the folders inside a cabinet and refuses absolute
+    and ".." paths; expand.exe is the fallback for Windows without it. Either way the result is
+    checked for anything outside `dest`."""
+    res = common.run(["tar", "-xf", str(path), "-C", str(dest)], timeout=3600)
+    if res is not None and res.rc == 0:
+        _check_tree(dest)
+        return
+    common.audit("install.cab_fallback", cab=path.name, reason=_tail(res) if res else "tar.exe not available")
+    for f in list(dest.iterdir()):                     # whatever tar left half done
+        shutil.rmtree(f, ignore_errors=True) if f.is_dir() else f.unlink(missing_ok=True)
+    res = _execute(["expand", "-F:*", str(path), str(dest)])
+    if res.rc != 0:
+        raise InstallError("could not unpack the cabinet: " + _tail(res))
+    _check_tree(dest)
 
 
 def unpack_package(path: Path, fmt: str, dest: Path) -> None:
     """Unpack a driver package into `dest`: .zip with path-traversal and size checks, .cab with
-    Windows' expand.exe, "dir" (a folder built by build_package_dir) copied as it is. The one
+    Windows' tar.exe keeping its folders (expand.exe as fallback), "dir" (a folder built by build_package_dir) copied as it is. The one
     unpacker used both before the user decides (engine) and in the elevated helper. Raises InstallError."""
     if fmt == "dir":
         src = Path(path)
@@ -184,9 +237,7 @@ def unpack_package(path: Path, fmt: str, dest: Path) -> None:
     elif fmt == "cab":
         if common.OS_NAME != "windows":
             raise InstallError("a .cab driver package can only be unpacked on Windows")
-        res = _execute(["expand", "-F:*", str(path), str(dest)])
-        if res.rc != 0:
-            raise InstallError("could not unpack the cabinet: " + _tail(res))
+        _unpack_cab(Path(path), Path(dest))
     else:
         raise InstallError(f"pnputil needs a .cab, .zip or unpacked driver package, not .{fmt}")
 
@@ -202,7 +253,10 @@ def _prepare_pnputil(pkg: dict, path: Path, workdir: Path, blocklist=None) -> li
         loldrivers.check_directory(extract_dir, blocklist)       # BYOVD gate, before anything else
     sig = art["signature"]
     if sig["type"] == "authenticode" and sig.get("target", "artifact") == "catalog":
-        verifier.verify_catalogs(extract_dir, sig["subject"], sig.get("certificate_thumbprint"))
+        # Only a package the helper itself received from the Windows Update Agent (engine
+        # sets acquire, the plan cannot) is judged with Windows Update as the trust anchor.
+        verifier.verify_catalogs(extract_dir, sig["subject"], sig.get("certificate_thumbprint"),
+                                 windows_update=art.get("acquired_by_helper") == "windows-update-agent")
     if inst.get("inf_path"):
         inf = (extract_dir / inst["inf_path"].replace("\\", "/")).resolve()
         if extract_dir.resolve() not in inf.parents or not inf.is_file():

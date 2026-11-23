@@ -285,7 +285,7 @@ def test_snapshot_failure_asks_again_before_continuing(window, monkeypatch):
     app, win, ups = window
     calls = []
 
-    def fake_apply(todo, ctx, allow_without_snapshot=False, allow_without_blocklist=False):
+    def fake_apply(todo, ctx, allow_without_snapshot=False, allow_without_blocklist=False, progress=None):
         calls.append(allow_without_snapshot)
         if not allow_without_snapshot:
             return {"status": "snapshot_failed", "snapshot_required": False, "items": [],
@@ -308,7 +308,7 @@ def test_unavailable_blocklist_asks_before_continuing_unchecked(window, monkeypa
     app, win, ups = window
     calls = []
 
-    def fake_apply(todo, ctx, allow_without_snapshot=False, allow_without_blocklist=False):
+    def fake_apply(todo, ctx, allow_without_snapshot=False, allow_without_blocklist=False, progress=None):
         calls.append((allow_without_snapshot, allow_without_blocklist))
         if not allow_without_blocklist:
             return {"status": "blocklist_unavailable", "items": [],

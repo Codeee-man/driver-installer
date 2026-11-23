@@ -481,8 +481,14 @@ class MainWindow(QMainWindow):
         self.say("Installing… waiting for administrator approval.")
         self.progress_pulse()                      # one elevated helper run: nothing to count
         self.run_in_background(lambda report: engine.apply(todo, self.ctx, allow_without_snapshot=allow_without_snapshot,
-                                                           allow_without_blocklist=allow_without_blocklist),
-                               self.install_done)
+                                                           allow_without_blocklist=allow_without_blocklist,
+                                                           progress=report),
+                               self.install_done, on_progress=self.on_install_progress)
+
+    def on_install_progress(self, text) -> None:
+        """Live status from the elevated installer (engine.apply tails its log)."""
+        if isinstance(text, str) and text:
+            self.say(text)
 
     def install_done(self, result) -> None:
         if isinstance(result, ElevationError):

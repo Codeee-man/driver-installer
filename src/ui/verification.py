@@ -10,12 +10,13 @@ Level rules (applied to update.checks, see core/model.py):
 """
 from __future__ import annotations
 
-from core.model import FAILED, NOT_APPLICABLE, PASSED, SKIPPED
+from core.model import AT_INSTALL, FAILED, NOT_APPLICABLE, PASSED, SKIPPED
 
 FULL, PARTIAL, NONE, PENDING = "Full", "Partial", "None", "Pending"
 KIND = {FULL: "full", PARTIAL: "partial", NONE: "none", PENDING: "busy"}
-SYMBOL = {PASSED: "✓", FAILED: "✗", SKIPPED: "○", NOT_APPLICABLE: "–"}
-STATE_TEXT = {PASSED: "passed", FAILED: "FAILED", SKIPPED: "skipped", NOT_APPLICABLE: "not applicable"}
+SYMBOL = {PASSED: "✓", FAILED: "✗", SKIPPED: "○", NOT_APPLICABLE: "–", AT_INSTALL: "»"}
+STATE_TEXT = {PASSED: "passed", FAILED: "FAILED", SKIPPED: "skipped", NOT_APPLICABLE: "not applicable",
+              AT_INSTALL: "checked by the installer before installing"}
 RANK = {FULL: 0, PARTIAL: 1, PENDING: 2, NONE: 3}
 
 
@@ -30,7 +31,7 @@ def level(update) -> str:
         return PENDING
     if SKIPPED in states:
         return PARTIAL
-    return FULL
+    return FULL          # passed, not applicable, or enforced by the installer (AT_INSTALL)
 
 
 def missing(update) -> list:

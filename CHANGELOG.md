@@ -6,6 +6,31 @@ each tag's GitHub Release shows its section from this file above the downloads
 
 ## [Unreleased]
 
+### Fixed
+- **Scans no longer stall on Windows Update drivers.** Without admin rights, Windows refuses to
+  copy a downloaded update out of its cache (`E_ACCESSDENIED`), after a 20-40 s download per
+  driver. The scan no longer tries: drivers that Windows Update offers this PC and that the public
+  catalog cannot serve are shown with their checks "checked by the installer" (`»` in the `(?)`),
+  counting as Full, because the installer refuses them unless every check passes.
+- **Live install progress.** While the installer runs as administrator, the window follows its
+  log every 300 ms: the status line shows the current step and driver ("Installing (2/5): …"),
+  and LOG gets the `[admin]` lines as they happen, not after it exits.
+- **OEM-signed and Insider flight-signed Windows Update drivers.** For a package the installer
+  received from the Windows Update Agent itself, Windows Update is the trust anchor: any valid
+  catalog signature is accepted (e.g. HP Inc.), and an untrusted-root signature (WDK test
+  certificates on Windows Insider builds) is logged as a warning and left to Windows' own driver
+  signing check in `pnputil`. Unsigned or tampered catalogs are still refused, and LOLDrivers
+  still checks every `.sys`. Catalog and manifest packages keep their pinned publishers.
+- **Multi-file Windows Update drivers** (e.g. HP SoftwareComponent, `Maintenance.cab`, 83 files):
+  cabinets are unpacked with Windows' `tar.exe`, keeping their folders (`expand.exe` as fallback),
+  and all parts of an update share one tree, so the `.inf`'s relative paths resolve. If `pnputil`
+  still reports a missing file (rc 2), the update is installed with the Windows Update Agent's
+  installer instead.
+- Localized tool output (e.g. Czech `pnputil` messages) is decoded with the console code page
+  instead of turning into `?` characters.
+
+## [1.1.4] - 2026-11-20
+
 ### Changed
 - **Clean theme redesigned: Warm Carbon & Vivid Orange.** Carbon surfaces, one orange accent
   (`#FF6B1A`) for the "Download and Install" button, the progress bar, checked boxes and focus;
@@ -134,7 +159,8 @@ First release.
   systemd timer for weekly checks.
 - Release builds: Windows zip, `.deb` and AppImage, with SHA-256 sums and download links.
 
-[Unreleased]: https://github.com/Codeee-man/driver-installer/compare/v1.1.3...HEAD
+[Unreleased]: https://github.com/Codeee-man/driver-installer/compare/v1.1.4...HEAD
+[1.1.4]: https://github.com/Codeee-man/driver-installer/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/Codeee-man/driver-installer/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/Codeee-man/driver-installer/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Codeee-man/driver-installer/compare/v1.1.0...v1.1.1

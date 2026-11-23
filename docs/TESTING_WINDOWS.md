@@ -112,7 +112,7 @@ or open the window and press LOG. The trace shows, in order:
 | `discovery.windows` | How many updates each source found |
 | `catalog.redirect` | The catalog answered the download dialog with a redirect; `-> ErrorInline.aspx` means it has no public copy of that update (common for OEM drivers Windows Update offers) |
 | `wua.fetch.done` / `wua.fetch.failed` | The Windows Update Agent handed over the driver's .cab, or why not (HRESULT and meaning, e.g. only administrators may download it) |
-| `verify.channel_trust` | Verification is Partial: only an administrator may download the driver, so the installer downloads it through Windows Update and runs every check before installing |
+| `verify.channel_trust` | The driver comes through Windows Update and only an administrator may download it: its checks are "checked by the installer", which downloads it through Windows Update and runs every check before installing |
 | `verify.failed` | Verification is None: which step failed and the real reason. The same reasons are in the (?) next to the badge |
 
 "Not newer than the installed driver" for every device is a normal result on a PC that

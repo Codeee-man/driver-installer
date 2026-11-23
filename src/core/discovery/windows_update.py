@@ -223,6 +223,60 @@ def fetch_payload(update_id: str, dest_dir: Path, max_size: int) -> list[Path]:
     return files
 
 
+_INSTALL_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$out = [ordered]@{ result = $null; reboot = $false; error = $null; hresult = $null; stage = 'search' }
+try {
+  $session = New-Object -ComObject Microsoft.Update.Session
+  $session.ClientApplicationID = 'driver-installer'
+  $found = $session.CreateUpdateSearcher().Search("UpdateID='" + $env:SD_UPDATE_ID + "'")
+  if ($found.Updates.Count -lt 1) { throw 'Windows Update no longer offers this update to this PC' }
+  $todo = New-Object -ComObject Microsoft.Update.UpdateColl
+  [void]$todo.Add($found.Updates.Item(0))
+  if (-not $found.Updates.Item(0).IsDownloaded) {
+    $out.stage = 'download'
+    $d = $session.CreateUpdateDownloader(); $d.Updates = $todo; [void]$d.Download()
+  }
+  $out.stage = 'install'
+  $installer = $session.CreateUpdateInstaller()
+  $installer.Updates = $todo
+  $r = $installer.Install()
+  $out.result = [int]$r.ResultCode
+  $out.reboot = [bool]$r.RebootRequired
+  if ($r.ResultCode -notin 2, 3) { $out.hresult = '0x{0:X8}' -f $r.GetUpdateResult(0).HResult; throw ("the install ended with result {0}" -f $r.ResultCode) }
+} catch {
+  $out.error = $_.Exception.Message
+  if (-not $out.hresult) { $out.hresult = '0x{0:X8}' -f $_.Exception.HResult }
+}
+$out | ConvertTo-Json -Compress
+"""
+
+
+def install_update(update_id: str) -> str:
+    """Install one update with the Windows Update Agent's own installer (as administrator).
+    Returns "installed" or "reboot-required"; raises WindowsUpdateError."""
+    if not _GUID.match(update_id or ""):
+        raise WindowsUpdateError("malformed update id")
+    common.audit("wua.install.start", update=update_id)
+    res = common.powershell(_INSTALL_SCRIPT, env={"SD_UPDATE_ID": update_id}, timeout=FETCH_TIMEOUT)
+    try:
+        data = json.loads(res.stdout) if res and res.stdout.strip() else None
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        raise WindowsUpdateError(common.clean_powershell_error(res.stderr if res else "") or "no answer from PowerShell")
+    if data.get("error"):
+        hresult, stage = str(data.get("hresult") or ""), str(data.get("stage") or "")
+        known = explain_hresult(hresult)
+        common.audit("wua.install.failed", update=update_id, stage=stage, hresult=hresult, error=str(data["error"]))
+        raise WindowsUpdateError(f"{stage} step failed: {data['error']}" + (f" [{hresult}]" if hresult else "")
+                                 + (f": {known}" if known else ""), hresult, stage)
+    status = "reboot-required" if data.get("reboot") else "installed"
+    common.audit("wua.install.done", update=update_id, result=data.get("result"), status=status)
+    return status
+
+
 def _elevated() -> bool:
     from .. import elevation
     try:

@@ -26,12 +26,14 @@ import re
 import secrets
 import shutil
 import tempfile
+import threading
 from pathlib import Path
 
 from . import common, elevation, installer, manifest, restore, trust, verifier
 from .common import ElevationError, InstallError, VerificationError
 from .discovery import linux_lvfs, ms_catalog
-from .model import CHECK_ORDER, CHECK_SHORT, FAILED, NOT_APPLICABLE, PASSED, SKIPPED, Device, Update, compare_versions
+from .model import (AT_INSTALL, CHECK_ORDER, CHECK_SHORT, FAILED, NOT_APPLICABLE, PASSED, SKIPPED, Device, Update,
+                    compare_versions)
 from .security import loldrivers
 
 MAX_PLAN_ITEMS = 64
@@ -329,13 +331,17 @@ def _inspect_driver_package(update: Update, ctx: Context, path: Path) -> None:
                                                   "known vulnerable or malicious driver hashes: no match"
                              if checked else "the package contains no .sys files")
         if catalog_signed:
+            from_wua = update.package["artifact"].get("acquired") == "windows-update-agent"
             try:
-                cats = verifier.verify_catalogs(tmp, sig["subject"], sig.get("certificate_thumbprint"))
+                cats = verifier.verify_catalogs(tmp, sig["subject"], sig.get("certificate_thumbprint"),
+                                                windows_update=from_wua)
             except VerificationError as exc:
                 update.set_check("publisher", FAILED, str(exc))
                 raise
-            update.set_check("publisher", PASSED, f"Authenticode: {', '.join(cats)} signed by "
-                                                  f"{verifier.describe_subjects(sig['subject'])}")
+            update.set_check("publisher", PASSED,
+                             f"Authenticode: {', '.join(cats)}; received from the Windows Update Agent, so any "
+                             "valid signer is accepted" if from_wua else
+                             f"Authenticode: {', '.join(cats)} signed by {verifier.describe_subjects(sig['subject'])}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)        # unpacked files never stay on disk
 
@@ -403,6 +409,11 @@ def _download_catalog_package(update: Update, ctx: Context, progress=None) -> Pa
             update.set_check("sha256", FAILED, f"could not get the file: {exc}")
             raise
         if not art.get("url"):
+            if not elevation.is_admin():
+                # Windows lets only administrators copy a downloaded update out of its cache
+                # (CopyFromCache: E_ACCESSDENIED), after a 20-40 s download each: do not try.
+                raise ChannelTrust(str(exc), "only an administrator may copy the update out of the Windows "
+                                             "Update cache, so it is not downloaded before installing")
             return _fetch_through_wua(update, ctx, str(exc))
         common.audit("wua.download_fallback", update=pkg["update_id"], reason=str(exc))
         info = ms_catalog.CatalogFile(ms_catalog.normalise_download_url(art["url"]))
@@ -466,25 +477,28 @@ def _fetch_through_wua(update: Update, ctx: Context, catalog_reason: str) -> Pat
 
 
 def _trust_windows_update_channel(update: Update, why: ChannelTrust) -> None:
-    """Partial, not None: Windows offers this driver to this PC but lets only an administrator
-    download it. Nothing could be inspected yet, so the installer (elevated) has the Windows
-    Update Agent fetch it and runs every check on the .cab before anything is installed."""
+    """Windows Update offers this driver to this PC through its authenticated channel, but only
+    an administrator may download it. Nothing is downloaded now; the checks are marked
+    AT_INSTALL: the elevated installer has the Windows Update Agent fetch it (every file checked
+    against Microsoft-signed update metadata), runs LOLDrivers on every .sys and checks every
+    catalog signature, and refuses the update if any of that fails, before pnputil runs."""
     art = update.package["artifact"]
     art.update(acquire="windows-update-agent", sha256="", size=0)
-    later = "the installer, running as administrator, checks this on the downloaded package before installing"
-    update.set_check("sha256", SKIPPED, f"not downloaded yet: {why.catalog_reason}, and {why.wua_reason}. The "
-                                        "installer has the Windows Update Agent download it (verified against "
-                                        "Microsoft-signed update metadata) and hashes it")
-    update.set_check("blocklist", SKIPPED, f"no driver files to inspect before installing; {later}")
-    update.set_check("publisher", SKIPPED, f"Microsoft's driver catalog signature cannot be read before the "
-                                           f"download; {later}")
+    update.set_check("sha256", AT_INSTALL, f"offered to this PC by Windows Update, which delivers it through its "
+                                           f"authenticated channel and checks every file against Microsoft-signed "
+                                           f"update metadata; the installer downloads it as administrator "
+                                           f"({why.catalog_reason}; {why.wua_reason})")
+    update.set_check("blocklist", AT_INSTALL, "every .sys file is compared with the LOLDrivers list by the installer "
+                                              "before pnputil runs; a match stops the whole install")
+    update.set_check("publisher", AT_INSTALL, "the installer requires a valid signature on every driver catalog "
+                                              "(.cat), and Windows enforces driver signing when it installs it")
     update.sha256, update.path = "", ""
     update.status, update.detail = "verified", "Windows Update channel: " + _summary(update)
     common.audit("verify.channel_trust", update=update.name, catalog=why.catalog_reason, wua=why.wua_reason)
 
 
 def _summary(update: Update) -> str:
-    words = {PASSED: "OK", SKIPPED: "skipped", FAILED: "FAILED"}
+    words = {PASSED: "OK", SKIPPED: "skipped", FAILED: "FAILED", AT_INSTALL: "at install"}
     return "; ".join(f"{CHECK_SHORT[c.key]} {words[c.state]}" for c in update.checks if c.state in words)
 
 
@@ -605,8 +619,11 @@ def helper_argv(plan_path: Path) -> list[str]:
 
 
 def apply(updates: list[Update], ctx: Context, *, allow_without_snapshot: bool = False,
-          allow_without_blocklist: bool = False) -> dict:
-    """Install the verified updates for real. Requests elevation if the process is not elevated."""
+          allow_without_blocklist: bool = False, progress=None) -> dict:
+    """Install the verified updates for real. Requests elevation if the process is not elevated.
+
+    progress(text), optional: called while the elevated helper runs, from a background thread,
+    with what it is doing ("Installing (2/5): HP Inc. ..."), as soon as it logs it."""
     todo = ready(updates)
     if not todo:
         return {"status": "nothing", "detail": "nothing verified, nothing to apply", "items": []}
@@ -617,8 +634,13 @@ def apply(updates: list[Update], ctx: Context, *, allow_without_snapshot: bool =
     if elevation.is_admin():
         result = execute_plan(plan_path)
     else:
-        rc = elevation.run_elevated(helper_argv(plan_path))
         results = common.system_state_dir() / "results"
+        tail = HelperLogTail(results / f"{plan_id}.log", lambda rec: _live_record(rec, progress))
+        tail.start()
+        try:
+            rc = elevation.run_elevated(helper_argv(plan_path))
+        finally:
+            tail.stop()                                    # reads what is left, then ends
         try:
             result = json.loads((results / f"{plan_id}.json").read_text())
         except (OSError, ValueError):
@@ -626,7 +648,8 @@ def apply(updates: list[Update], ctx: Context, *, allow_without_snapshot: bool =
                       "detail": f"the elevated helper exited with code {rc} and left no result"}
         if not result.get("log"):                          # crashed before writing it: use the live log
             result["log"] = read_helper_log(results / f"{plan_id}.log")
-        forward_helper_log(result.get("log") or [])
+        if not tail.count:                                 # nothing streamed (no live log): replay it now
+            forward_helper_log(result.get("log") or [])
         if result.get("status") != "ok" and rc not in (0, None):
             result.setdefault("helper_rc", rc)
     if result.get("status") == "security_alert":            # purge the offending download on our side too
@@ -694,6 +717,30 @@ def _policy_catalog_package(desc) -> dict:
             "artifact": artifact, "install": {"method": "pnputil", "reboot_required": False}}
 
 
+PNPUTIL_FILE_NOT_FOUND = 2
+
+
+def step(phase: str, index: int, total: int, name: str) -> None:
+    """Progress of the elevated run, for the window while it waits (engine.apply tails the log)."""
+    common.audit("helper.step", phase=phase, index=index, total=total, name=name[:120])
+
+
+def _install_through_wua(pkg: dict, failed) -> "installer.InstallResult":
+    """pnputil could not find a file the .inf names (rc 2). Some Windows Update software
+    components and firmware only install the way Windows Update lays them out: hand the same,
+    already checked update ID to the Windows Update Agent's installer."""
+    from .discovery import windows_update
+    common.audit("helper.wua_install_fallback", update=pkg["update_id"], name=pkg["name"], pnputil=failed.detail)
+    try:
+        status = windows_update.install_update(pkg["update_id"])
+    except windows_update.WindowsUpdateError as exc:
+        return installer.InstallResult(pkg["id"], "failed", failed.rc,
+                                       f"pnputil: {failed.detail}; Windows Update installer: {exc}", failed.commands)
+    return installer.InstallResult(pkg["id"], status, 0,
+                                   "installed by the Windows Update Agent after pnputil could not find a file "
+                                   f"({failed.detail})", failed.commands + [["IUpdateInstaller.Install", pkg["update_id"]]])
+
+
 def _acquire_through_wua(pkg: dict, staging: Path) -> Path:
     """Helper side of a Windows Update item: as administrator, have the agent hand over the
     update and build the driver folder that installer.prepare then checks (LOLDrivers, catalog
@@ -703,7 +750,7 @@ def _acquire_through_wua(pkg: dict, staging: Path) -> Path:
         folder, digest = wua_package(pkg["update_id"], staging / ("wua-" + pkg["update_id"]))
     except windows_update.WindowsUpdateError as exc:
         raise VerificationError(f"Windows Update download as administrator failed: {exc}") from None
-    pkg["artifact"]["sha256"] = digest
+    pkg["artifact"].update(sha256=digest, acquired_by_helper="windows-update-agent")
     common.audit("helper.wua_acquired", update=pkg["update_id"], name=pkg["name"], files_sha256=digest,
                  files=sum(1 for f in folder.rglob("*") if f.is_file()),
                  infs=[f.name for f in folder.rglob("*.inf")][:10])
@@ -794,6 +841,79 @@ def read_helper_log(path: Path) -> list[dict]:
     return out[-HELPER_LOG_MAX:]
 
 
+STEP_TEXT = {"verify": "Checking", "download": "Downloading through Windows Update", "install": "Installing"}
+
+
+def step_text(rec: dict) -> str | None:
+    """Status-line text for a live helper event, or None if it does not change the status."""
+    event, data = rec.get("event"), rec.get("data") or {}
+    if event == "helper.start":
+        return f"Administrator approval granted. Preparing {data.get('items')} update(s)…"
+    if event == "helper.step":
+        if data.get("phase") == "restore":
+            return "Creating a restore point…"
+        verb = STEP_TEXT.get(data.get("phase"), str(data.get("phase", "")).capitalize())
+        return f"{verb} ({data.get('index')}/{data.get('total')}): {data.get('name')}…"
+    if event == "helper.refused":
+        return f"Blocked: {data.get('name')}"
+    if event == "helper.done":
+        return "Finishing…"
+    return None
+
+
+def _live_record(rec: dict, progress) -> None:
+    forward_helper_log([rec])
+    text = step_text(rec)
+    if text and progress:
+        progress(text)
+
+
+class HelperLogTail(threading.Thread):
+    """Follows the elevated helper's results/<plan>.log while it runs, every `interval`
+    seconds, and hands each complete JSON line to on_record (on this thread). stop() reads
+    whatever is left and waits for the thread. The file may not exist until the user approves
+    the UAC prompt."""
+
+    def __init__(self, path: Path, on_record, interval: float = 0.3):
+        super().__init__(daemon=True, name="helper-log-tail")
+        self.path, self.on_record, self.interval = Path(path), on_record, interval
+        self.count, self._offset, self._stop_event, self._partial = 0, 0, threading.Event(), b""
+
+    def run(self) -> None:
+        while not self._stop_event.wait(self.interval):
+            self._drain()
+        self._drain()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self.is_alive():
+            self.join(timeout=10)
+        else:
+            self._drain()
+
+    def _drain(self) -> None:
+        try:
+            with open(self.path, "rb") as fh:
+                fh.seek(self._offset)
+                chunk = fh.read()
+        except OSError:
+            return
+        self._offset += len(chunk)
+        lines = (self._partial + chunk).split(b"\n")
+        self._partial = lines.pop()                       # an unfinished line waits for the next read
+        for line in lines:
+            try:
+                rec = json.loads(line.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+            if isinstance(rec, dict) and isinstance(rec.get("event"), str):
+                self.count += 1
+                try:
+                    self.on_record(rec)
+                except Exception as exc:                  # a display problem must not stop the install wait
+                    common.audit("helper.tail_error", error=str(exc))
+
+
 def forward_helper_log(records: list[dict]) -> None:
     """Replay the elevated helper's events into this process's audit log as "elevated.<event>",
     so the LOG drawer and --debug show what happened as administrator, in order."""
@@ -840,14 +960,16 @@ def _run_plan(plan: dict, result: dict, trusted_keys) -> None:
     try:
         # 3. Private copy, hash, publisher signature, unpack, blocklist, catalog signer.
         prepared = []  # (kind, ident, name, pkg, install_command)
-        for kind, ident, name, pkg, item in resolved:
+        for n, (kind, ident, name, pkg, item) in enumerate(resolved, 1):
             try:
+                step("verify", n, len(resolved), name)
                 if kind == "fwupd":
                     prepared.append((kind, str(item["fwupd_device"]), name, None, None))
                     continue
                 staged = None
                 art = pkg.get("artifact")
                 if art and art.get("acquire") == "windows-update-agent":
+                    step("download", n, len(resolved), name)
                     staged = _acquire_through_wua(pkg, staging)
                 elif art:
                     staged = verifier.stage_verified_copy(Path(str(item["file"])), staging, art["sha256"],
@@ -872,6 +994,7 @@ def _run_plan(plan: dict, result: dict, trusted_keys) -> None:
             return
 
         # 4. Restore point.
+        step("restore", 0, len(prepared), "")
         snap = restore.create()
         result["snapshot"] = dataclasses.asdict(snap)
         if not snap.ok:
@@ -884,9 +1007,12 @@ def _run_plan(plan: dict, result: dict, trusted_keys) -> None:
                 return
 
         # 5. Install.
-        for kind, ident, name, pkg, command in prepared:
+        for n, (kind, ident, name, pkg, command) in enumerate(prepared, 1):
+            step("install", n, len(prepared), name)
             res = (installer.install_fwupd_device(ident, dry_run=False) if kind == "fwupd"
                    else installer.execute(pkg, command))
+            if kind != "fwupd" and not res.ok and res.rc == PNPUTIL_FILE_NOT_FOUND and pkg.get("origin") == "windows-update":
+                res = _install_through_wua(pkg, res)
             result["items"].append(_item_record(f"fwupd:{ident}" if kind == "fwupd" else ident, name, res))
         good = [i for i in result["items"] if i["status"] in ("installed", "reboot-required", "no-op")]
         result["status"] = "ok" if len(good) == len(result["items"]) else "partial" if good else "failed"

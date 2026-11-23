@@ -365,15 +365,51 @@ def verify_authenticode(path: Path, subject, thumbprint: str | None = None) -> A
     return info
 
 
-def verify_catalogs(directory: Path, subject, thumbprint: str | None = None) -> list[str]:
-    """Verify every .cat in an extracted driver package against the pinned publisher.
-    Windows itself checks that the catalog covers the .inf/.sys files when pnputil stages them."""
+# A chain to a root this PC does not trust: test or flight signing (Windows Insider builds sign
+# some drivers with WDK test certificates that only flight-signing-enabled PCs accept).
+UNTRUSTED_ROOT = ("UnknownError", "NotTrusted")
+
+
+def verify_catalogs(directory: Path, subject, thumbprint: str | None = None, *,
+                    windows_update: bool = False) -> list[str]:
+    """Verify every .cat in an extracted driver package. Windows itself checks that the catalog
+    covers the .inf/.sys files when pnputil stages them.
+
+    Pinned (default): each catalog must be Valid and signed by `subject` (one or a list).
+    windows_update=True, only for a package the elevated installer itself received from the
+    Windows Update Agent, which checked every file against Microsoft-signed update metadata:
+    Windows Update is the trust anchor, so any Valid signer is accepted (OEMs such as HP sign
+    their own catalogs), and an untrusted-root signature (Insider flight signing) is logged as a
+    warning and left to Windows' kernel driver signature enforcement in pnputil. Unsigned,
+    tampered (HashMismatch) or otherwise invalid catalogs are still refused."""
     cats = sorted(Path(directory).rglob("*.cat"))
     if not cats:
         raise VerificationError("driver package contains no security catalog (.cat)")
+    if not windows_update:
+        for cat in cats:
+            verify_authenticode(cat, subject, thumbprint)
+        return [c.name for c in cats]
+    out = []
     for cat in cats:
-        verify_authenticode(cat, subject, thumbprint)
-    return [c.name for c in cats]
+        info = authenticode_info(cat)
+        if info.valid:
+            common.audit("signature.wua_ok", file=cat.name, signer=info.subject, issuer=info.issuer)
+            out.append(f"{cat.name} ({_cn(info.subject)})")
+        elif info.status in UNTRUSTED_ROOT and info.subject:
+            common.audit("signature.wua_untrusted_root", file=cat.name, status=info.status, signer=info.subject,
+                         message=info.message,
+                         note="delivered by Windows Update; Windows enforces driver signing when pnputil installs it")
+            out.append(f"{cat.name} ({_cn(info.subject)}, untrusted root: {info.status}, left to Windows)")
+        else:
+            raise VerificationError(f"Authenticode check failed for {cat.name}: status {info.status}"
+                                    + (f" ({info.message})" if info.message else "")
+                                    + (f", signer '{info.subject}'" if info.subject else ""))
+    return out
+
+
+def _cn(subject: str) -> str:
+    m = re.search(r"CN=(\"[^\"]+\"|[^,]+)", subject or "")
+    return m.group(1).strip('"') if m else (subject or "unknown signer")
 
 
 # ----------------------------------------------------------------- GPG (Linux)

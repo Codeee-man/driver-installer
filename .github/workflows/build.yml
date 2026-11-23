@@ -88,6 +88,42 @@ jobs:
           # no arguments = the GUI (here with --demo --screenshot through the gui subcommand)
           $p = Start-Process $exe -ArgumentList 'gui', '--demo', '--screenshot', "$PWD\smoke.png" -Wait -PassThru
           if ($p.ExitCode -ne 0 -or -not (Test-Path smoke.png)) { throw "GUI did not render (exit $($p.ExitCode))" }
+      - name: Real cabinets keep their folders and localized output decodes
+        # A driver cabinet with sub-folders, made with makecab (LZX, like Windows Update's), must
+        # unpack with its tree intact (tar.exe; expand.exe would flatten it), and console output
+        # in the OEM code page must decode without replacement characters.
+        shell: pwsh
+        run: |
+          $w = Join-Path $env:RUNNER_TEMP 'cabtest'
+          New-Item -ItemType Directory -Force "$w\src\Agent\lang" | Out-Null
+          'x' | Set-Content "$w\src\pkg.inf"; 'y' | Set-Content "$w\src\Agent\HpAgent.exe"; 'z' | Set-Content "$w\src\Agent\lang\HpAgent.mui"
+          @(".Set CabinetNameTemplate=Maintenance.cab", ".Set DiskDirectoryTemplate=.", ".Set CompressionType=LZX",
+            ".Set MaxDiskSize=0", ".Set RptFileName=setup.rpt", ".Set InfFileName=setup.inf",
+            ".Set Cabinet=on", ".Set Compress=on", "src\pkg.inf pkg.inf",
+            ".Set DestinationDir=Agent", "src\Agent\HpAgent.exe HpAgent.exe",
+            ".Set DestinationDir=Agent\lang", "src\Agent\lang\HpAgent.mui HpAgent.mui") | Set-Content "$w\cab.ddf"
+          Push-Location $w
+          makecab /F cab.ddf
+          Pop-Location
+          $cab = Get-ChildItem $w -Recurse -Filter Maintenance.cab | Select-Object -First 1
+          if (-not $cab) { Get-Content "$w\cab.ddf"; throw 'makecab did not produce a cabinet' }
+          if ($cab.FullName -ne "$w\Maintenance.cab") { Move-Item $cab.FullName "$w\Maintenance.cab" }
+          @'
+          import pathlib, sys
+          sys.path.insert(0, str(pathlib.Path("src").resolve()))
+          from core import common, installer
+          w = pathlib.Path(sys.argv[1])
+          out = w / "out"; out.mkdir()
+          installer.unpack_package(w / "Maintenance.cab", "cab", out)
+          tree = sorted(str(p.relative_to(out)).replace("\\", "/") for p in out.rglob("*") if p.is_file())
+          print("unpacked:", tree)
+          assert tree == ["Agent/HpAgent.exe", "Agent/lang/HpAgent.mui", "pkg.inf"], tree
+          res = common.run(["pnputil", "/add-driver", str(w / "missing" / "*.inf")])
+          print("pnputil rc", res.rc, "output:", (res.stdout + res.stderr).strip()[:200], "OEM", common.oem_codepage())
+          assert "\ufffd" not in res.stdout + res.stderr
+          '@ | Set-Content -Encoding utf8 "$w\check.py"
+          python "$w\check.py" "$w"
+          if ($LASTEXITCODE -ne 0) { throw 'cabinet / encoding check failed' }
       - name: Elevated helper reports why it refuses a deferred Windows Update item
         # The real --apply-plan path, as administrator, against the real Windows Update Agent:
         # an update ID Windows does not offer must be refused with the agent's own reason,

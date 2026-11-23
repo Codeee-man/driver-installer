@@ -26,6 +26,9 @@ class Device:
 # Itemised verification. Every update carries one record per check, in this order, so a
 # front end can say exactly what was and was not verified.
 PASSED, FAILED, SKIPPED, NOT_APPLICABLE = "passed", "failed", "skipped", "not_applicable"
+# Not done yet, but the elevated installer must pass it before it changes anything, and refuses
+# the update otherwise (Windows Update drivers that only an administrator may download).
+AT_INSTALL = "at_install"
 CHECK_ORDER = ("sha256", "manifest", "blocklist", "publisher")
 CHECK_LABELS = {
     "sha256": "SHA-256 integrity",
@@ -39,7 +42,7 @@ CHECK_SHORT = {"sha256": "SHA-256", "manifest": "Ed25519", "blocklist": "LOLDriv
 @dataclasses.dataclass
 class Check:
     key: str                        # one of CHECK_ORDER
-    state: str                      # passed | failed | skipped | not_applicable
+    state: str                      # passed | failed | skipped | not_applicable | at_install
     reason: str = ""
 
     @property
