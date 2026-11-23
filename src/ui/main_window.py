@@ -311,7 +311,6 @@ class MainWindow(QMainWindow):
         QMetaObject.invokeMethod(self.log, "appendPlainText", Qt.QueuedConnection, Q_ARG(str, line))
 
     def say(self, text: str, kind: str = "") -> None:
-        self._said = (text, kind)
         self.status.setText("> " + text)
         self.status.setProperty("kind", kind)
         self.status.style().unpolish(self.status)

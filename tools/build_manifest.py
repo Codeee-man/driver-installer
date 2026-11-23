@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build and sign a SafeDriver manifest from a directory of driver files.
 
-    python tools/builder.py --driver-dir drivers/ --url-prefix https://dl.example.org/drivers \\
+    python tools/build_manifest.py --driver-dir drivers/ --url-prefix https://dl.example.org/drivers \\
         --private-key signing.pem --output manifest.json
 
 What it does
@@ -341,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
             raise BuildError("--expires-days must be at least 1")
         key, public = load_signing_key(args.private_key)
     except (BuildError, OSError) as exc:
-        print(f"builder: {exc}", file=sys.stderr)
+        print(f"build_manifest: {exc}", file=sys.stderr)
         return 2
 
     args.driver_dir = args.driver_dir.resolve()
@@ -359,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {'+' if entry['in_manifest'] else '-'} {entry['sha256'][:16]}  {entry['size']:>10}  {rel}"
               + (f"   ({entry['note']})" if entry.get("note") else ""))
     if not packages:
-        print("builder: nothing to publish (no valid .inf driver package found); no manifest written", file=sys.stderr)
+        print("build_manifest: nothing to publish (no valid .inf driver package found); no manifest written", file=sys.stderr)
         return 1
 
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
@@ -377,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
         # Prove the result loads exactly as a client would load it, before writing anything.
         manifest_mod.load_manifest(raw, signature, trusted_keys={key_id: public}, check_rollback=False)
     except (BuildError, VerificationError) as exc:
-        print(f"builder: {exc}", file=sys.stderr)
+        print(f"build_manifest: {exc}", file=sys.stderr)
         return 1
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

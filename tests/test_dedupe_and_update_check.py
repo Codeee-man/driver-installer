@@ -113,12 +113,12 @@ def test_scan_and_cli_show_one_row_with_the_count(wmi_with_cpus, as_user, capsys
 def test_gui_shows_one_row_with_a_subtle_count(tmp_path, windows, runner):
     pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    import gui
+    import ui
     from PySide6.QtCore import Qt
     from ui.models import COL_DEVICE, CountRole
     entities, signed = cpu_rows()
     (cpu,) = dedupe_devices(scanner_win.build_devices(entities, signed, []))
-    app, win = gui.create(engine.Context(manifest={"packages": []}), tmp_path)
+    app, win = ui.create(engine.Context(manifest={"packages": []}), tmp_path)
     try:
         win.model.load([cpu, Device("Audio", driver_version="6.0")], [])
         names = [win.model.index(r, COL_DEVICE).data(Qt.DisplayRole) for r in range(win.model.rowCount())]
@@ -190,8 +190,8 @@ def test_tests_never_reach_github():
 def gui_window(tmp_path, windows, runner):
     pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    import gui
-    app, win = gui.create(engine.Context(manifest={"packages": []}), tmp_path)
+    import ui
+    app, win = ui.create(engine.Context(manifest={"packages": []}), tmp_path)
     win.show()
     app.processEvents()
     yield app, win

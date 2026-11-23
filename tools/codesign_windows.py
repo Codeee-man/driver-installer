@@ -256,15 +256,6 @@ def iscc_signtool(python: str = sys.executable, script: Path | None = None) -> s
     return f"/Sdisign=$q{python}$q $q{script}$q $f"
 
 
-def verify_signed(files: list[Path], runner=subprocess.run) -> SigningCert:
-    """For files signed elsewhere (Inno Setup's compile step): same read-back as after signing."""
-    cert = configured()
-    if cert is None:
-        raise BuildError("verify_signed needs the signing secrets")
-    check_signatures(files, cert, runner)
-    return cert
-
-
 def main(argv: list[str]) -> int:
     """py tools\\codesign_windows.py FILE...: sign files with the configured certificate.
     Also Inno Setup's SignTool command. Without the secrets this fails: a caller that asks for a

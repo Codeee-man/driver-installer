@@ -305,7 +305,7 @@ def authenticode_info(path: Path) -> AuthenticodeInfo:
     """
     res = common.powershell(_AUTHENTICODE_PS, env={"SD_FILE": str(path)})
     if res is None or res.rc != 0:
-        return AuthenticodeInfo(message=(common.clean_powershell_error(res.stderr) if res else "PowerShell unavailable"))
+        return AuthenticodeInfo(message=(common.clean_powershell_error(res.stderr) if res else "Windows PowerShell is not available"))
     return parse_authenticode(res.stdout)
 
 

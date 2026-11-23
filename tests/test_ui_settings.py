@@ -65,9 +65,9 @@ def test_presets_are_the_five_accents_and_three_fonts():
 
 
 def test_gui_has_no_theme_flag(monkeypatch):
-    import gui
+    import ui
     seen = []
-    monkeypatch.setattr(gui, "run", lambda ctx, tmp, shot: seen.append(shot) or 0)
+    monkeypatch.setattr(ui, "run", lambda ctx, tmp, shot: seen.append(shot) or 0)
     assert cli.main(["gui"]) == 0 and seen == [None]
     with pytest.raises(SystemExit):
         cli.main(["gui", "--theme", "clean"])                  # one design now: there is no Clean theme

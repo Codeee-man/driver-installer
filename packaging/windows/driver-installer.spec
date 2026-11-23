@@ -27,7 +27,7 @@ datas = [
     (os.path.join(SRC, "LICENSE"), "licenses"),
     (os.path.join(SRC, fonts, "VT323-OFL.txt"), "licenses"),
 ]
-hidden = collect_submodules("core") + collect_submodules("ui") + ["cli", "gui", "demo", "helper_main"]
+hidden = collect_submodules("core") + collect_submodules("ui") + ["cli", "demo", "helper_main"]
 # Never bundled: unused GUI toolkits, Qt modules nothing uses, and test machinery.
 excludes = ["tkinter", "unittest", "pydoc_data", "test", "pytest",
             "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuickWidgets", "PySide6.QtPdf", "PySide6.QtNetwork",

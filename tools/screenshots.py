@@ -52,14 +52,14 @@ def sample():
 
 
 def render(out: Path, accent: str, font: str) -> list[Path]:
-    import gui
+    import ui
     from core import engine
     from ui import settings, theme
 
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["XDG_CONFIG_HOME"] = os.environ["APPDATA"] = tmp       # never touch the real ui.json
         settings.save(accent=accent, font=font)
-        app, win = gui.create(engine.Context(manifest={"packages": []}), Path(tmp))
+        app, win = ui.create(engine.Context(manifest={"packages": []}), Path(tmp))
         devices, ups = sample()
         win.model.load(devices, ups)
         win.toggle_full()

@@ -3,6 +3,8 @@
 
     python tools/sign_manifest.py --key ~/safedriver-signing.key manifest.json
 
+The key is the hex file tools/keygen.py writes or an Ed25519 PEM (the same loader as
+tools/build_manifest.py, which builds and signs a manifest from a driver folder in one go).
 Re-sign after every edit: changing a single byte invalidates the signature.
 """
 import argparse
@@ -13,18 +15,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "tools"))
 from core import manifest as manifest_mod, trust  # noqa: E402
+from build_manifest import BuildError, load_signing_key  # noqa: E402
 
 
-def main() -> int:
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--key", type=Path, required=True)
     ap.add_argument("manifest", type=Path)
-    args = ap.parse_args()
-    key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(args.key.expanduser().read_text().strip()))
-    pub = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+    args = ap.parse_args(argv)
+    try:
+        key, pub = load_signing_key(args.key.expanduser())
+    except (BuildError, OSError) as exc:
+        print(f"sign_manifest: {exc}", file=sys.stderr)
+        return 2
     raw = args.manifest.read_bytes()
     doc = json.loads(raw)
     for pkg in doc.get("packages", []):

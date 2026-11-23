@@ -28,7 +28,6 @@ machine with Windows Update blocked by policy); results on physical hardware are
 """
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -158,15 +157,9 @@ def policy_notes(policy: dict | None) -> list[str]:
 
 def search() -> dict:
     """Raw WUA search result: {"policy", "updates", "resultCode", "error"}."""
-    res = common.powershell(_SCRIPT, env={"SD_CRITERIA": SEARCH_CRITERIA}, timeout=TIMEOUT)
-    if res is None:
-        raise WindowsUpdateError("Windows PowerShell is not available")
-    if res.rc != 0 or not res.stdout.strip():
-        raise WindowsUpdateError(common.clean_powershell_error(res.stderr) or f"PowerShell exited with {res.rc}")
-    try:
-        data = json.loads(res.stdout)
-    except ValueError as exc:
-        raise WindowsUpdateError(f"unreadable Windows Update result: {exc}") from exc
+    data, problem = common.powershell_json(_SCRIPT, env={"SD_CRITERIA": SEARCH_CRITERIA}, timeout=TIMEOUT, strict=True)
+    if problem:
+        raise WindowsUpdateError(problem)
     if not isinstance(data, dict):
         raise WindowsUpdateError("unexpected Windows Update result")
     if data.get("error"):
@@ -178,6 +171,21 @@ def search() -> dict:
 
 def explain_hresult(hresult: str) -> str:
     return KNOWN_HRESULTS.get(hresult.upper().replace("0X", "0x"), "")
+
+
+def _agent_result(script: str, env: dict, update_id: str, failed_event: str, prefix: str = "") -> dict:
+    """Run a fetch or install script; its JSON result, or WindowsUpdateError naming the step
+    ({stage}), the HRESULT and what that HRESULT means."""
+    data, problem = common.powershell_json(script, env=env, timeout=FETCH_TIMEOUT)
+    if not isinstance(data, dict):
+        raise WindowsUpdateError(problem or "unexpected answer from PowerShell")
+    if data.get("error"):
+        hresult, stage = str(data.get("hresult") or ""), str(data.get("stage") or "")
+        known = explain_hresult(hresult)
+        common.audit(failed_event, update=update_id, stage=stage, hresult=hresult, error=str(data["error"]))
+        raise WindowsUpdateError(f"{prefix}{stage} step failed: {data['error']}" + (f" [{hresult}]" if hresult else "")
+                                 + (f": {known}" if known else ""), hresult, stage)
+    return data
 
 
 def fetch_payload(update_id: str, dest_dir: Path, max_size: int) -> list[Path]:
@@ -192,24 +200,8 @@ def fetch_payload(update_id: str, dest_dir: Path, max_size: int) -> list[Path]:
         raise WindowsUpdateError("malformed update id")
     dest_dir.mkdir(parents=True, exist_ok=True)
     common.audit("wua.fetch.start", update=update_id, elevated=_elevated())
-    res = common.powershell(_FETCH_SCRIPT, env={"SD_UPDATE_ID": update_id, "SD_DEST": str(dest_dir)},
-                            timeout=FETCH_TIMEOUT)
-    if res is None:
-        raise WindowsUpdateError("Windows PowerShell is not available")
-    try:
-        data = json.loads(res.stdout) if res.stdout.strip() else None
-    except ValueError:
-        data = None
-    if not isinstance(data, dict):
-        raise WindowsUpdateError(common.clean_powershell_error(res.stderr) or f"PowerShell exited with {res.rc}")
-    if data.get("error"):
-        hresult, stage = str(data.get("hresult") or ""), str(data.get("stage") or "")
-        known = explain_hresult(hresult)
-        message = f"Windows Update Agent {stage} step failed: {data['error']}" + (f" [{hresult}]" if hresult else "")
-        if known:
-            message += f": {known}"
-        common.audit("wua.fetch.failed", update=update_id, stage=stage, hresult=hresult, error=str(data["error"]))
-        raise WindowsUpdateError(message, hresult, stage)
+    data = _agent_result(_FETCH_SCRIPT, {"SD_UPDATE_ID": update_id, "SD_DEST": str(dest_dir)},
+                         update_id, "wua.fetch.failed", "Windows Update Agent ")
     root = dest_dir.resolve()
     # Trust the folder, not the list the script printed: only regular files really inside it.
     files = sorted(f for f in root.rglob("*") if f.is_file() and not f.is_symlink() and root in f.resolve().parents)
@@ -259,19 +251,7 @@ def install_update(update_id: str) -> str:
     if not _GUID.match(update_id or ""):
         raise WindowsUpdateError("malformed update id")
     common.audit("wua.install.start", update=update_id)
-    res = common.powershell(_INSTALL_SCRIPT, env={"SD_UPDATE_ID": update_id}, timeout=FETCH_TIMEOUT)
-    try:
-        data = json.loads(res.stdout) if res and res.stdout.strip() else None
-    except ValueError:
-        data = None
-    if not isinstance(data, dict):
-        raise WindowsUpdateError(common.clean_powershell_error(res.stderr if res else "") or "no answer from PowerShell")
-    if data.get("error"):
-        hresult, stage = str(data.get("hresult") or ""), str(data.get("stage") or "")
-        known = explain_hresult(hresult)
-        common.audit("wua.install.failed", update=update_id, stage=stage, hresult=hresult, error=str(data["error"]))
-        raise WindowsUpdateError(f"{stage} step failed: {data['error']}" + (f" [{hresult}]" if hresult else "")
-                                 + (f": {known}" if known else ""), hresult, stage)
+    data = _agent_result(_INSTALL_SCRIPT, {"SD_UPDATE_ID": update_id}, update_id, "wua.install.failed")
     status = "reboot-required" if data.get("reboot") else "installed"
     common.audit("wua.install.done", update=update_id, result=data.get("result"), status=status)
     return status

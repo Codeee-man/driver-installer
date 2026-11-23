@@ -237,3 +237,17 @@ def test_repository_layout_and_doc_links_are_current():
         assert name in readme and (ROOT / path).exists(), path
     count = int(_re.search(r"# (\d+) tests", readme).group(1))
     assert count >= 357
+    # The README's layout tree lists exactly what is there: every tool and doc, nothing removed.
+    tree = readme[readme.index("Layout:"):]
+    tree = tree[:tree.index("```", tree.index("```") + 3)]
+    tools_block = tree[tree.index("\ntools/"):tree.index("\nschema/")]
+    listed_tools = set(_re.findall(r"[\w.]+\.(?:py|sh|ps1)", tools_block)) | {"install_helper.ps1"}
+    actual_tools = {f.name for f in (ROOT / "tools").iterdir() if f.is_file() and f.suffix in (".py", ".sh", ".ps1")}
+    assert listed_tools == actual_tools, (listed_tools ^ actual_tools)
+    docs_line = next(line for line in tree.splitlines() if line.startswith("docs/"))
+    assert set(_re.findall(r"\w+\.md", docs_line)) == {f.name for f in (ROOT / "docs").glob("*.md")}
+    for gone in ("docs/PHASE2.md", "tools/builder.py", "src/gui.py"):
+        assert not (ROOT / gone).exists(), gone
+        assert Path(gone).name not in tree, gone
+    for doc in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]:
+        assert "PHASE2" not in doc.read_text(encoding="utf-8"), doc.name

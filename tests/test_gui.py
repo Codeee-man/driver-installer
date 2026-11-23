@@ -11,7 +11,6 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 
-import gui  # noqa: E402
 import ui  # noqa: E402
 from core import engine  # noqa: E402
 from core.common import ElevationError  # noqa: E402
@@ -47,7 +46,7 @@ def make_update(name, checks, status="verified", pid=None):
 
 @pytest.fixture
 def window(tmp_path, windows, runner):
-    app, win = gui.create(engine.Context(manifest={"packages": []}), tmp_path)
+    app, win = ui.create(engine.Context(manifest={"packages": []}), tmp_path)
     ups = {"full": make_update("Wifi", FULL_CHECKS), "full2": make_update("Gpu", FULL_CHECKS),
            "partial": make_update("Nic", PARTIAL_CHECKS), "none": make_update("Legacy", NONE_CHECKS, "failed"),
            "fw": make_update("Ssd", FWUPD_CHECKS, "delegated")}
@@ -75,11 +74,6 @@ def answer(win, *answers):
 
 
 # ------------------------------------------------------------- structure
-def test_entry_point_shim_and_lazy_qt():
-    assert gui.run is ui.run and gui.create is ui.create and gui.settle is ui.settle
-    assert len(open(gui.__file__).read().strip().splitlines()) <= 3
-
-
 def test_window_layout(window):
     app, win, _ = window
     assert win.windowTitle() == "Driver Installer" and win.title.text() == "Driver Installer"

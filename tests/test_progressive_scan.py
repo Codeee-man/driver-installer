@@ -12,7 +12,6 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication, QItemSelectionModel  # noqa: E402
 
-import gui  # noqa: E402
 import ui  # noqa: E402
 from core import common, engine, scanner_win  # noqa: E402
 from core.discovery import linux_lvfs, ms_catalog, windows_update  # noqa: E402
@@ -104,7 +103,7 @@ def test_linux_recommendation_for_an_unlisted_device_is_reported(runner, monkeyp
 
 # ------------------------------------------------------------------ worker
 def test_scan_worker_routes_events_to_typed_signals(tmp_path):
-    app = gui.create(engine.Context(manifest={"packages": []}), tmp_path)[0]
+    app = ui.create(engine.Context(manifest={"packages": []}), tmp_path)[0]
     dev, update = Device("Wifi"), object()
     worker = ScanWorker(lambda report: [report(m) for m in (
         ("devices_enumerated", [dev]), ("device_started", dev), ("device_updated", dev, [update]),
@@ -126,7 +125,7 @@ def test_scan_worker_routes_events_to_typed_signals(tmp_path):
 # ------------------------------------------------------------------- model
 @pytest.fixture
 def model(tmp_path):
-    gui.create(engine.Context(manifest={"packages": []}), tmp_path)
+    ui.create(engine.Context(manifest={"packages": []}), tmp_path)
     return DriverTableModel()
 
 
@@ -255,7 +254,7 @@ def test_failed_scan_leaves_no_row_spinning(tmp_path, windows, runner, monkeypat
 
 def test_install_pulses_the_progress_bar_until_it_finishes(tmp_path, windows, runner, monkeypatch):
     from test_gui import make_update
-    app, win = gui.create(engine.Context(manifest={"packages": []}), tmp_path)
+    app, win = ui.create(engine.Context(manifest={"packages": []}), tmp_path)
     upd = make_update("Wifi", FULL_CHECKS)
     win.model.load([upd.device], [upd])
     win.model.set_selected(0, True)
@@ -283,7 +282,7 @@ def test_install_pulses_the_progress_bar_until_it_finishes(tmp_path, windows, ru
     ("green", "#00FF66", "#1A3320"),
     ("orange", "#FF6B1A", None)])
 def test_progress_bar_follows_the_accent(tmp_path, accent, fill, border):
-    gui.create(engine.Context(manifest={"packages": []}), tmp_path)
+    ui.create(engine.Context(manifest={"packages": []}), tmp_path)
     theme.configure(accent=accent)
     sheet = theme.stylesheet()
     bar = sheet[sheet.index("QProgressBar#progress {"):sheet.index("QLabel#counter")]

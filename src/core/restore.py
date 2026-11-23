@@ -85,7 +85,8 @@ def parse_windows_result(text: str) -> RestoreResult:
 def _create_windows(description: str) -> RestoreResult:
     res = common.powershell(_WINDOWS_PS, env={"SD_DESC": description}, timeout=900)
     if res is None or res.rc != 0:
-        return RestoreResult("failed", "system-restore", (res.stderr.strip()[:300] if res else "PowerShell unavailable"))
+        return RestoreResult("failed", "system-restore",
+                             (common.clean_powershell_error(res.stderr) if res else "Windows PowerShell is not available"))
     return parse_windows_result(res.stdout)
 
 

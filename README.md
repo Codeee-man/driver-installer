@@ -6,7 +6,7 @@ a dry-run default.
 
 ```
 pip install cryptography PySide6 pytest
-python -m pytest -q                                  # 456 tests, no admin rights or internet needed
+python -m pytest -q                                  # 457 tests, no admin rights or internet needed
 
 python src/cli.py scan                               # hardware vs. manifest (table, or --json)
 python src/cli.py check --notify                     # exit 0 up to date, 1 updates, 2+ error
@@ -80,7 +80,7 @@ Layout:
 
 ```
 src/
-  cli.py, ui/                 front ends (never elevated); gui.py, demo.py
+  cli.py, ui/                 front ends (never elevated); demo.py (gui --demo)
   windows_main.py             DriverInstaller.exe: GUI, CLI and --apply-plan helper in one program
   helper_main.py              the elevated helper (--apply-plan <plan.json> only)
   core/
@@ -101,12 +101,13 @@ tools/
   codesign_windows.py         Authenticode signing with signtool (docs/SIGNING.md)
   diagnose_windows.ps1        why Windows refuses to start the program (read-only)
   install_helper.sh|.ps1      protected helper from a source checkout
-  pin_key.sh, keygen.py, sign_manifest.py, builder.py   manifest keys and signing
+  pin_key.sh, keygen.py       create and pin a manifest signing key
+  build_manifest.py, sign_manifest.py   manifest from a driver folder; sign a manifest
   changelog.py                CHANGELOG.md section for a release's notes
   screenshots.py              headless README screenshots (main window, Settings)
 schema/                       manifest schema 1.1 and an example
 contrib/                      systemd user units, polkit policy, desktop file, icons
-docs/                         ARCHITECTURE.md, PHASE2.md, SIGNING.md, TESTING_WINDOWS.md
+docs/                         ARCHITECTURE.md, SIGNING.md, TESTING_WINDOWS.md, img/
 tests/                        pytest suite with recorded WMI fixtures and loopback HTTP servers
 .github/workflows/            ci.yml (tests on push), build.yml (release builds on v* tags)
 ```

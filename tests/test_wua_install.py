@@ -295,8 +295,8 @@ def test_window_shows_live_install_progress(tmp_path, runner, windows):
     import os
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
-    import gui
-    app, win = gui.create(engine.Context(manifest={"packages": []}), tmp_path)
+    import ui
+    app, win = ui.create(engine.Context(manifest={"packages": []}), tmp_path)
     win.on_install_progress("Installing (2/5): HP Inc. SoftwareComponent Driver Update…")
     assert win.status.text().endswith("Installing (2/5): HP Inc. SoftwareComponent Driver Update…")
     win.on_install_progress(None)                                       # anything else is ignored

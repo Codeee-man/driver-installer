@@ -30,6 +30,22 @@ each tag's GitHub Release shows its section from this file above the downloads
   `scan`, `instances` in `scan --json`). The merged entry keeps every instance ID and hardware
   ID, so update matching and `pnputil` still cover all of them.
 
+### Removed
+- `docs/PHASE2.md`: its still-current content (rights split, module table, enforced rules,
+  what is and is not tested) is now in `docs/ARCHITECTURE.md`, which describes the actual
+  Python implementation instead of the original Rust/Tauri plan.
+- `src/gui.py`, a two-line re-export of `ui`; `cli.py gui` and the tests use `ui` directly.
+- Unused code: `tools/codesign_windows.verify_signed` (Setup is re-signed after its manifest
+  change) and a write-only status field in the window.
+
+### Changed (tools)
+- `tools/builder.py` is now `tools/build_manifest.py` (same options), next to `build_linux.py`
+  and `build_windows.py`. `tools/sign_manifest.py` uses its key loader, so it also accepts
+  Ed25519 PEM keys, and refuses an RSA or unreadable key instead of crashing. Both have tests.
+- PowerShell scripts that print a JSON result go through one helper (`common.powershell_json`);
+  the Windows Update fetch and install share one error path, and restore-point failures show
+  PowerShell's readable message instead of raw CLIXML.
+
 ### Fixed
 - **No more false "administrator rights … UAC prompt was declined" message when Setup is first
   started.** Inno Setup's loader starts without rights (`asInvoker`) and restarts itself

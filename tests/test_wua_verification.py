@@ -289,14 +289,14 @@ def test_popover_opens_on_none_and_leads_with_the_failure(box, as_admin, tmp_pat
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QLabel
-    import gui
+    import ui
     from ui.models import COL_VERIFY, HelpRole
     from ui.popover import ChecksPopover
     _, runner = box
     use_wua(runner, wua_fetch_result(error="Windows Update no longer offers this update to this PC", stage="search"))
     update = hp_update()
     engine.verify_update(update, engine.Context())
-    app, win = gui.create(engine.Context(manifest={"packages": []}), tmp_path)
+    app, win = ui.create(engine.Context(manifest={"packages": []}), tmp_path)
     win.model.load([update.device], [update])
     assert win.model.index(0, COL_VERIFY).data(HelpRole)                 # (?) is offered on a None row
     pop = ChecksPopover(win, update)
@@ -430,12 +430,12 @@ def test_a_crashed_helper_still_leaves_its_log(box, as_user, monkeypatch):
 def test_window_shows_why_each_item_was_blocked(box, as_user, tmp_path):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
-    import gui
+    import ui
     from PySide6.QtCore import Qt
     from ui.models import COL_STATUS, BadgeRole
     _, runner = box
     ups, _ = deferred(box, n=2)
-    app, win = gui.create(engine.Context(manifest={"packages": []}), tmp_path)
+    app, win = ui.create(engine.Context(manifest={"packages": []}), tmp_path)
     win.model.load([u.device for u in ups], ups)
     reason = "verification before installing: Authenticode check failed for hpcustomcap.cat: signer 'CN=x'"
     win.install_done({"status": "refused", "detail": "no item passed verification, nothing was installed",

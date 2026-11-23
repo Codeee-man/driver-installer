@@ -295,6 +295,24 @@ def powershell(script: str, env: dict | None = None, timeout: int = 600) -> Resu
                timeout=timeout, env=env, log_args=False, unset=("PSModulePath",))
 
 
+def powershell_json(script: str, env: dict | None = None, timeout: int = 600, *,
+                    strict: bool = False) -> tuple[object, str]:
+    """Run a script that prints one JSON value: (value, "") or (None, why it failed). Our
+    scripts report their own errors inside that JSON, so a non-zero exit code only counts as a
+    failure with strict=True. Never raises."""
+    res = powershell(script, env=env, timeout=timeout)
+    if res is None:
+        return None, "Windows PowerShell is not available"
+    failed = strict and res.rc != 0
+    try:
+        data = json.loads(res.stdout) if res.stdout.strip() and not failed else None
+    except ValueError as exc:
+        return None, clean_powershell_error(res.stderr) or f"unreadable PowerShell output: {exc}"
+    if data is None:
+        return None, clean_powershell_error(res.stderr) or f"PowerShell exited with {res.rc}"
+    return data, ""
+
+
 def clean_powershell_error(text: str) -> str:
     """Readable message from PowerShell's stderr, which is CLIXML when output is redirected."""
     text = text or ""
